@@ -1,0 +1,63 @@
+name: jwt-alive
+
+services:
+  jwt-alive:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # make docker-build-cn 会覆盖成国内镜像源
+        APT_MIRROR: ${APT_MIRROR:-deb.debian.org}
+        UV_DEFAULT_INDEX: ${UV_DEFAULT_INDEX:-https://pypi.org/simple}
+    image: jwt-alive:latest
+    container_name: jwt-alive
+    restart: unless-stopped
+
+    # 以宿主用户身份运行：挂载目录不会被写成 root 属主，刷新后回写配置不会报权限错
+    # Linux 上建议在 .env 里写 UID=$(id -u) GID=$(id -g)
+    user: "${UID:-1000}:${GID:-1000}"
+
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      # 宿主机代理不会自动进容器，需要时在这里显式传入
+      # HTTP_PROXY: "http://127.0.0.1:1080"
+      # ALL_PROXY: "socks5h://127.0.0.1:1080"
+
+    volumes:
+      # 配置文件：按「单文件」挂载。
+      # 好处：宿主若是软链接（如 config/sites.yaml -> self/prod.yaml），Docker 会解析到真实文件，
+      # 刷新回写直接落到真实文件，软链接本身不会被替换。
+      # 注意：宿主文件必须先存在，否则 Docker 会把它当目录创建（用 create_host_path: false 直接报错）。
+      - type: bind
+        source: ./config/sites.yaml
+        target: /app/config/sites.yaml
+        bind:
+          create_host_path: false
+      # 自定义适配器（只读）
+      - ./plugins:/app/plugins:ro
+      # 运行期状态与日志
+      - jwt-state:/app/state
+      - jwt-logs:/app/logs
+
+    command: ["run"]
+
+    healthcheck:
+      # 阈值默认取配置里扫描间隔的 3 倍，可显式覆盖
+      test: ["CMD", "jwt-alive", "health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  jwt-state:
+  jwt-logs:

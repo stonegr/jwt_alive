@@ -1,0 +1,107 @@
+[project]
+name = "jwt-alive"
+version = "0.1.0"
+description = "可扩展的 JWT 保活框架：按站点配置过期字段、刷新接口、登录态校验与定时刷新"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "apscheduler>=3.10",
+    "httpx>=0.27",
+    "pyjwt>=2.8",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "rich>=13.7",
+    "ruamel.yaml>=0.18",
+    "typer>=0.12",
+    "socksio>=1.0",
+]
+
+[project.scripts]
+jwt-alive = "jwt_alive.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.22.3",
+    "pytest>=8.2",
+    "pytest-httpx>=0.30",
+    "ruff>=0.5",
+    "types-PyYAML>=6.0",
+]
+[tool.ruff]
+# 目标 Python 版本
+target-version = "py313"
+# 最大行长度
+line-length = 170
+
+# 默认包含所有子目录的 .py 和 .pyi，通常不需要显式写 include
+# exclude 保持原样即可，Ruff 默认也会忽略常见的目录
+exclude = [
+    ".git",
+    ".ruff_cache",
+    "__pycache__",
+    "build",
+    "dist",
+    "venv",
+    ".venv",
+    "alembic/versions",
+]
+
+[tool.ruff.lint]
+# 扩展选择的规则集
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort (导入排序)
+    "C4",  # flake8-comprehensions (列表推导式优化)
+    "B",   # flake8-bugbear (常见代码陷阱)
+    "Q",   # flake8-quotes (引号规范)
+    "N",   # pep8-naming (命名规范)
+    "UP",  # pyupgrade (自动升级新语法)
+    "ANN", # flake8-annotations (类型注解)
+    "RUF", # Ruff-specific rules
+    "SIM", # flake8-simplify (简化代码)
+]
+
+ignore = [
+    "B008",   # 允许在函数参数中使用函数调用（FastAPI 依赖注入常用）
+    "RUF", # 中文标点字符
+    "D",      # 如果不需要强制写 docstring，可以忽略
+    "ANN401", # any
+    "ANN201", # return
+    "ANN205", # return
+]
+
+# 允许自动修复
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+lines-after-imports = 2
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+line-ending = "lf"
+# 保持为 true，有助于减少 git diff 冲突
+skip-magic-trailing-comma = false
+
+[tool.ruff.lint.flake8-quotes]
+inline-quotes = "single"
+multiline-quotes = "double"
+docstring-quotes = "double"
+
+[tool.ruff.lint.flake8-annotations]
+mypy-init-return = true
+suppress-none-returning = true
+suppress-dummy-args = true
+
+[tool.ruff.lint.pep8-naming]
+classmethod-decorators = ["classmethod"]
+staticmethod-decorators = ["staticmethod"]

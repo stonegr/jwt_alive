@@ -1,0 +1,83 @@
+# jwt-alive 配置示例
+# 复制为 config/sites.yaml 后按站点修改。
+# 密钥建议用环境变量引用：${ENV_NAME} 或 ${ENV_NAME:-默认值}
+# 冒号写法在环境变量未定义时留空，方便先用模板跑通流程
+
+defaults:
+  scan_interval_seconds: 60     # 全局扫描间隔（秒）
+  refresh_before_seconds: 300   # 剩余寿命小于该值时触发刷新
+  timeout_seconds: 15
+  user_agent: "jwt-alive/0.1"
+  verify_tls: true
+  headers: {}
+  cookies: {}
+sites:
+  # 示例一：标准 exp 字段，POST 刷新，响应体返回新 token
+  - name: example-standard
+    enabled: false
+    adapter: "jwt_alive.adapters.http:HttpSiteAdapter"
+    token:
+      access_token: "${EXAMPLE_ACCESS_TOKEN:-}"
+      refresh_token: "${EXAMPLE_REFRESH_TOKEN:-}"
+    jwt:
+      expiry_field: "exp"          # 解构 payload 后取哪个字段
+      expiry_format: "auto"        # auto / epoch_s / epoch_ms / iso8601 / duration_s
+      leeway_seconds: 30
+    refresh:
+      url: "https://example.com/api/auth/refresh"
+      method: "POST"
+      headers:
+        "Content-Type": "application/json"
+        "Authorization": "Bearer {access_token}"
+      body:
+        refresh_token: "{refresh_token}"
+      token_source: "body"          # body / cookie
+      access_token_path: "data.access_token"
+      refresh_token_path: "data.refresh_token"
+    login_check:
+      url: "https://example.com/api/user/profile"
+      method: "GET"
+      headers:
+        "Authorization": "Bearer {access_token}"
+      success:
+        type: "status"              # status / json / cookie
+        expected: 200
+    schedule:
+      interval_seconds: 60
+      refresh_before_seconds: 300
+    persist:
+      write_back_to_config: true
+    # 可选：失败重试与代理
+    retry_attempts: 3
+    retry_backoff_seconds: 1.0
+    trust_env: true          # 是否使用系统代理环境变量
+    proxy: null              # 显式代理，如 http://127.0.0.1:1080
+
+  # 示例二：过期时间放在自定义字段（毫秒时间戳），刷新接口用 GET 并从 Set-Cookie 取 token
+  - name: example-cookie
+    enabled: false
+    token:
+      access_token: "${OTHER_ACCESS_TOKEN:-}"
+      refresh_token: "${OTHER_REFRESH_TOKEN:-}"
+    jwt:
+      expiry_field: "data.expireTime"   # 支持点路径
+      expiry_format: "epoch_ms"
+      leeway_seconds: 10
+    refresh:
+      url: "https://other.example.com/session/renew?rt={refresh_token}"
+      method: "GET"
+      headers:
+        "X-App": "demo"
+      token_source: "cookie"
+      cookie_name: "SESSION"
+      refresh_cookie_name: "SESSION_RT"
+    login_check:
+      url: "https://other.example.com/api/me"
+      method: "GET"
+      success:
+        type: "json"                 # 判定 body.code == 0
+        path: "code"
+        equals: 0
+    schedule:
+      interval_seconds: 120
+      refresh_before_seconds: 600

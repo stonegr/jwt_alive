@@ -1,0 +1,37 @@
+# 虚拟环境
+.venv/
+venv/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# 运行期数据（token 属于敏感信息，禁止提交）
+state/
+logs/
+
+# 本地配置（可能含明文 token），只提交 example 模板
+config/*.yaml
+!config/sites.example.yaml
+config/*.local.yaml
+*.local.yaml
+
+# 环境变量文件（含 token）
+.env
+.env.*
+!.env.example
+
+# 工具缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store

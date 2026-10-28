@@ -1,0 +1,305 @@
+# jwt-alive
+
+可扩展的 **JWT 保活** 框架：把 token 从配置文件里读进来，按站点配置「过期时间字段 / 刷新接口 / 登录态校验接口」，由后台定时任务自动续期。
+
+- 多站点：一份 YAML 管所有站点，每个站点独立配置
+- 过期字段可选：不同网站把过期时间放在 `exp` / `expireTime` / `expires_in` / 嵌套字段里都能解析
+- 刷新接口自定义：URL、HTTP 方法、请求头、请求体都能配，新 token 支持从 **响应体** 或 **Set-Cookie** 提取
+- 登录态校验：先用 JWT 自身解出的过期时间判断，再调用站点接口二次确认
+- 定时刷新：全局扫描 + 每站阈值（临期刷新），可选每站 cron
+- 纯 CLI 守护进程，无 Web 服务；状态落盘 + 结构化日志
+- 可扩展：站点特有逻辑写成适配器子类，配置里一行 `adapter:` 指定
+
+---
+
+## 快速开始
+
+```bash
+# 1. 安装依赖（uv）
+uv sync
+
+# 2. 生成配置模板
+uv run jwt-alive init
+
+# 3. 编辑 config/sites.yaml，填入各站点的 token 与接口
+
+# 4. 先做一次检查
+uv run jwt-alive check
+
+# 5. 启动保活守护进程
+uv run jwt-alive run
+```
+
+## 命令
+
+| 命令 | 说明 |
+| --- | --- |
+| `jwt-alive run` | 启动守护进程：定时检查 + 临期自动刷新（前台运行，Ctrl-C 退出） |
+| `jwt-alive check` | 检查所有站点登录态，不刷新（有站点未登录时退出码为 1） |
+| `jwt-alive refresh <site>` | 手动刷新指定站点（`--all` 刷新全部，`--force` 忽略到期判断） |
+| `jwt-alive status` | 查看本地状态文件，不发起网络请求 |
+| `jwt-alive health` | 健康检查：判断守护进程是否还在正常扫描（退出码 0=健康） |
+| `jwt-alive validate-config` | 校验配置并打印摘要 |
+| `jwt-alive init` | 生成配置模板 |
+
+全局选项：`--config/-c` 配置文件、`--state/-s` 状态文件、`--log-level/-l` 日志级别、
+`--log-file` 日志文件、`--plugins` 自定义适配器目录、`--quiet` 关闭控制台日志。
+
+> 以上路径也可用环境变量指定（命令行参数优先），容器里默认已设置：
+> `JWT_ALIVE_CONFIG`、`JWT_ALIVE_STATE`、`JWT_ALIVE_LOG_FILE`、`JWT_ALIVE_PLUGINS`、`JWT_ALIVE_LOG_LEVEL`。
+
+## 配置说明
+
+完整示例见 [`config/sites.example.yaml`](config/sites.example.yaml)。
+
+```yaml
+defaults:
+  scan_interval_seconds: 60     # 全局扫描间隔
+  refresh_before_seconds: 300   # 剩余寿命小于该值就刷新
+  timeout_seconds: 15
+  user_agent: "jwt-alive/0.1"
+
+sites:
+  - name: example
+    enabled: true
+    adapter: "jwt_alive.adapters.http:HttpSiteAdapter"   # 可指向自定义子类
+    token:
+      access_token: "${EXAMPLE_ACCESS_TOKEN}"     # 支持 ${ENV} 与 ${ENV:-默认值}
+      refresh_token: "${EXAMPLE_REFRESH_TOKEN}"
+    jwt:
+      expiry_field: "exp"        # 解构 payload 后取哪个字段（支持点路径 data.expireTime）
+      expiry_format: "auto"      # auto|epoch_s|epoch_ms|iso8601|duration_s
+      leeway_seconds: 30
+    refresh:
+      url: "https://example.com/api/auth/refresh"
+      method: "POST"
+      headers:
+        Authorization: "Bearer {access_token}"     # 支持占位符
+      body:
+        refresh_token: "{refresh_token}"
+      token_source: "body"      # body | cookie
+      access_token_path: "data.access_token"      # 响应体点路径
+      refresh_token_path: "data.refresh_token"
+      cookie_name: "SESSION"    # token_source=cookie 时的 Cookie 名
+    login_check:
+      url: "https://example.com/api/user/profile"
+      method: "GET"
+      headers:
+        Authorization: "Bearer {access_token}"
+      success:
+        type: "status"          # status | json | cookie
+        expected: 200
+    schedule:
+      interval_seconds: 60
+      refresh_before_seconds: 300
+      cron: "0 3 * * *"          # 可选，到点强制刷新
+    persist:
+      write_back_to_config: true
+    retry_attempts: 3            # 失败重试次数
+    retry_backoff_seconds: 1.0   # 重试退避基数（秒）
+    trust_env: true              # 是否使用系统代理环境变量
+    proxy: null                  # 显式代理地址
+```
+
+### 过期时间解析
+
+`jwt.expiry_field` 指定 JWT 解构后的字段名（支持 `data.expireTime` 这类点路径），
+`jwt.expiry_format` 指定取值格式：
+
+| 格式 | 说明 | 例子 |
+| --- | --- | --- |
+| `auto` | 自动区分秒/毫秒时间戳、ISO8601 字符串、相对时长 | 默认 |
+| `epoch_s` | Unix 秒 | `1767225600` |
+| `epoch_ms` | Unix 毫秒 | `1767225600000` |
+| `iso8601` | ISO8601 字符串 | `2026-01-01T00:00:00Z` |
+| `duration_s` | 相对时长（秒），有 `iat` 时以 `iat` 为起点 | `3600` |
+
+### 登录态判定
+
+1. **先看 JWT 自身**：解不出 / 已过期 → 直接判定未登录，不再请求接口；
+2. **再调接口**：按 `login_check.success.type` 判定
+   - `status`：HTTP 状态码等于 `expected`
+   - `json`：`path` 取到的值等于 `equals`（不填 `equals` 时只要非空即通过）
+   - `cookie`：响应里存在指定 Cookie
+
+## 扩展：自定义站点适配器
+
+在 `plugins/` 下写一个子类，配置里用 `adapter:` 指定即可：
+
+```python
+from jwt_alive.adapters.http import HttpSiteAdapter
+from jwt_alive.models import CheckResult, SiteState, TokenBundle
+
+
+class MySiteAdapter(HttpSiteAdapter):
+    def extract_tokens(self, response):  # 新 token 在自定义响应头里
+        bundle = TokenBundle()
+        bundle.access_token = response.headers.get('X-Token')
+        return bundle
+
+    def check_login(self, state):  # 自定义登录态判定
+        return CheckResult(True, '自定义校验通过')
+```
+
+可覆写的钩子：
+
+| 钩子 | 作用 |
+| --- | --- |
+| `resolve_expiry(token)` | 解析过期时间 |
+| `build_refresh_request(state)` | 构造刷新请求 |
+| `extract_tokens(response)` | 提取新 token |
+| `check_login(state)` | 校验登录态 |
+| `on_refreshed(old, new)` | 刷新成功后的钩子 |
+
+配置示例：
+
+```yaml
+sites:
+  - name: my-site
+    adapter: "plugins.my_site:MySiteAdapter"    # 或 "my_site:MySiteAdapter"
+```
+
+## Token 存放
+
+- **状态文件** `state/state.json`：运行时最新 token、到期时间、最后刷新/错误，重启后优先于配置文件使用
+- **回写配置文件**：`persist.write_back_to_config: true` 时，刷新成功会把新 token 写回 `config/sites.yaml`（保留 YAML 注释）
+
+> `config/sites.yaml`、`state/`、`logs/`、`.env` 都已在 `.gitignore` 中，token 不要提交到仓库。
+
+## Docker 部署
+
+镜像基于 `python:3.12-slim`，依赖用 `uv.lock` 锁定构建，非 root 运行，带健康检查。
+
+### 首次部署
+
+```bash
+# 1. 准备配置与密钥
+make init                             # 从模板生成 config/sites.yaml（已存在则跳过）
+cp .env.example .env
+vim .env                 # 填各站点 token
+vim config/sites.yaml    # 改成真实站点，enabled: true
+
+# 2. 构建并启动
+make docker-build
+make docker-up
+make docker-logs
+```
+
+也可以直接用 compose：
+
+```bash
+docker compose up -d --build
+docker compose logs -f
+```
+
+### 国内构建
+
+网络慢时用清华源构建（PyPI + Debian 源都走国内镜像）：
+
+```bash
+make docker-build-cn
+```
+
+底层等价于：
+
+```bash
+docker compose build \
+  --build-arg APT_MIRROR=mirrors.tuna.tsinghua.edu.cn \
+  --build-arg UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+> 基础镜像 `python:3.12-slim` 仍从 Docker Hub 拉取，需要加速的话配置 Docker daemon
+> 的 registry mirror（`/etc/docker/daemon.json` 的 `registry-mirrors`）。
+
+> **配置用软链接也没问题**：compose 按「单文件」挂载 `./config/sites.yaml`，
+> Docker 会自动解析软链接指向真实文件（如 `self/prod.yaml`），
+> 刷新回写直接落到真实文件，软链接本身不会被替换。
+> 但宿主的 `config/sites.yaml` 必须先存在（`make init` 或手动创建），
+> 否则 Docker 会把它当成目录创建，容器启动即报错。
+
+### 常用操作
+
+```bash
+docker compose exec jwt-alive jwt-alive check       # 检查登录态
+docker compose exec jwt-alive jwt-alive status      # 查看状态
+docker compose run --rm jwt-alive jwt-alive refresh --all   # 手动刷新
+docker compose run --rm jwt-alive jwt-alive init    # 在挂载目录生成配置模板
+docker compose down                                 # 停止
+docker compose down -v                              # 停止并清空状态/日志卷
+```
+
+### 挂载与权限
+
+| 容器路径 | 来源 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `/app/config/sites.yaml` | 宿主 `./config/sites.yaml`（软链接会被解析） | 读写 | 刷新成功后回写新 token |
+| `/app/plugins` | 宿主 `./plugins` | 只读 | 自定义适配器 |
+| `/app/state` | 命名卷 `jwt-state` | 读写 | 最新 token、扫描时间 |
+| `/app/logs` | 命名卷 `jwt-logs` | 读写 | 轮转日志文件 |
+
+容器以 `${UID}:${GID}` 运行（默认 1000:1000），避免把宿主文件写成 root 属主。
+**Linux 上如果 token 回写报权限错**，把宿主 uid/gid 写进 `.env`：
+
+```bash
+echo "UID=$(id -u)" >> .env
+echo "GID=$(id -g)" >> .env
+```
+
+### 健康检查
+
+容器 `HEALTHCHECK` 执行 `jwt-alive health`：读取状态文件里的 `last_scan`，
+判断守护进程最近是否还在正常扫描。**进程假死（不再扫描）会被判定为 unhealthy**，
+配合 `restart: unless-stopped` 可配合外部编排做自愈。
+
+阈值默认取配置里 `scan_interval_seconds` 的 3 倍（最小 30 秒），也可显式指定：
+
+```bash
+make docker-health                       # 查看健康状态
+docker compose exec jwt-alive jwt-alive health --max-age 300
+```
+
+### 常见问题
+
+- **代理**：宿主的 `HTTP_PROXY` / `ALL_PROXY` 不会进容器，需要在 `docker-compose.yml` 的
+  `environment` 里显式传入，或用站点级 `proxy:` 配置
+- **时区**：`TZ` 只影响日志与状态展示，内部计算一律用 UTC
+- **token 放哪**：推荐放在 `.env`（环境变量）里，配置中用 `${VAR}` 引用，避免明文落盘
+- **更新镜像**：改完代码执行 `docker compose up -d --build` 重建并重启
+- **调试**：`docker compose exec jwt-alive sh` 进入容器，或 `make docker-shell`
+
+## 目录结构
+
+```
+jwt_alive/
+├── cli.py            命令行入口
+├── config.py         配置加载、环境变量插值、默认值合并
+├── models.py         配置模型 + 运行期模型
+├── jwt_tools.py      JWT 解码、过期时间解析
+├── adapters/         站点适配器（base / http / loader）
+├── runtime.py        单站点运行时（刷新 / 校验流程）
+├── service.py        多站点编排
+├── scheduler.py      APScheduler 定时任务
+├── state.py          状态持久化
+├── persist.py        回写配置文件
+├── logging_setup.py  日志配置
+└── http_client.py    HTTP 客户端
+plugins/              自定义适配器
+config/               配置（sites.yaml 本地，sites.example.yaml 模板）
+tests/                pytest 测试
+Dockerfile            多阶段构建（uv 构建 → python:3.12-slim 运行）
+docker-compose.yml    编排：挂载、密钥、健康检查、自动重启
+.env.example          token 环境变量模板
+```
+
+## 开发
+
+```bash
+make install   # uv sync
+make dev       # 本地启动守护进程（DEBUG 日志）
+make test      # pytest
+make lint      # ruff check + ruff format --check + mypy
+make fmt       # ruff format + ruff check --fix
+make typecheck # mypy
+make check     # lint + test
+make help      # 查看全部命令
+```

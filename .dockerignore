@@ -1,0 +1,40 @@
+# 版本控制与 IDE
+.git
+.gitignore
+.idea
+.vscode
+.DS_Store
+
+# Python 产物
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+build
+dist
+
+# 缓存
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# 运行期数据与敏感信息（token 绝不进镜像）
+state
+logs
+.env
+.env.*
+!.env.example
+config/sites.yaml
+config/*.local.yaml
+*.local.yaml
+
+# 文档与测试（镜像里不需要）
+tests
+self
+Makefile
+docker-compose.yml
+Dockerfile
+.dockerignore
