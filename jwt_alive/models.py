@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+import hmac
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -234,11 +235,43 @@ class DefaultsConfig(_Base):
     cookies: dict[str, str] = Field(default_factory=dict)
 
 
+class ApiConfig(_Base):
+    """对外 HTTP API 配置。"""
+
+    enabled: bool = True
+    """是否启用 API（未配置 auth 时不会启动）。"""
+
+    host: str = '127.0.0.1'
+    """监听地址，容器内一般用 0.0.0.0。"""
+
+    port: int = 8080
+    """监听端口。"""
+
+    ssl_certfile: str | None = None
+    """HTTPS 证书路径（可选，建议走反向代理）。"""
+
+    ssl_keyfile: str | None = None
+    """HTTPS 私钥路径（可选）。"""
+
+    @field_validator('port')
+    @classmethod
+    def _valid_port(cls, v: int) -> int:
+        if not 1 <= v <= 65535:
+            raise ValueError('api.port 必须在 1-65535 之间')
+        return v
+
+
 class AppConfig(_Base):
     """完整配置。"""
 
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     sites: list[SiteConfig] = Field(default_factory=list)
+    auth: dict[str, str] = Field(default_factory=dict)
+    """对外 API 的账号表：用户名 -> 密码（明文，与 token 同风险模型）。"""
+
+    api: ApiConfig = Field(default_factory=ApiConfig)
+    """对外 API 配置。"""
+
     source_path: str | None = None
     """配置文件来源路径，写回时使用。"""
 
@@ -250,6 +283,15 @@ class AppConfig(_Base):
             if site.name == name:
                 return site
         return None
+
+    def verify_password(self, username: str, password: str) -> bool:
+        """校验 API 账号密码（常量时间比较，防时序攻击）。"""
+        expected = self.auth.get(username)
+        if expected is None:
+            # 用户不存在时也要走一次比较，避免通过耗时区分用户是否存在
+            hmac.compare_digest(password, password)
+            return False
+        return hmac.compare_digest(password, expected)
 
 
 # --------------------------------------------------------------------------------------

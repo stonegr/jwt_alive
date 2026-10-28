@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from jwt_alive.config import ConfigError, expand_env, load_config, parse_config
+from jwt_alive.config import ConfigError, expand_env, interpolate_env, load_config, parse_config
 
 
 def _minimal_site(**overrides: object) -> dict[str, object]:
@@ -116,3 +116,71 @@ sites:
     )
     with pytest.raises(ConfigError):
         load_config(config_file, environ={})
+
+
+def test_parse_config_auth_dict() -> None:
+    config = parse_config(
+        {
+            'auth': {'alice': 'pwd1', 'bob': 'pwd2'},
+            'sites': [_minimal_site()],
+        }
+    )
+    assert config.auth == {'alice': 'pwd1', 'bob': 'pwd2'}
+    assert config.verify_password('alice', 'pwd1')
+    assert not config.verify_password('alice', 'wrong')
+    assert not config.verify_password('nobody', 'pwd1')
+
+
+def test_parse_config_api_defaults() -> None:
+    config = parse_config({'sites': [_minimal_site()]})
+    assert config.api.enabled is True
+    assert config.api.host == '127.0.0.1'
+    assert config.api.port == 8080
+
+
+def test_parse_config_api_section() -> None:
+    config = parse_config(
+        {
+            'api': {'enabled': False, 'host': '0.0.0.0', 'port': 9000},
+            'sites': [_minimal_site()],
+        }
+    )
+    assert config.api.enabled is False
+    assert config.api.host == '0.0.0.0'
+    assert config.api.port == 9000
+
+
+def test_parse_config_rejects_invalid_api_port() -> None:
+    with pytest.raises(ConfigError):
+        parse_config({'api': {'port': 99999}, 'sites': [_minimal_site()]})
+
+
+def test_parse_config_rejects_unknown_top_level_key() -> None:
+    with pytest.raises(ConfigError):
+        parse_config({'nope': 1, 'sites': [_minimal_site()]})
+
+
+def test_interpolate_env_expands_dict_keys() -> None:
+    data = {'auth': {'${USER_NAME}': '${PWD}'}}
+    result = interpolate_env(data, {'USER_NAME': 'alice', 'PWD': 'secret'})
+    assert result == {'auth': {'alice': 'secret'}}
+
+
+def test_load_config_auth_with_env(tmp_path: Path) -> None:
+    config_file = tmp_path / 'sites.yaml'
+    config_file.write_text(
+        """
+auth:
+  "${API_USER}": "${API_PASSWORD}"
+sites:
+  - name: demo
+    token:
+      access_token: "a"
+    refresh:
+      url: "https://example.com/refresh"
+""",
+        encoding='utf-8',
+    )
+    config = load_config(config_file, environ={'API_USER': 'admin', 'API_PASSWORD': 'p@ss'})
+    assert config.auth == {'admin': 'p@ss'}
+    assert config.verify_password('admin', 'p@ss')

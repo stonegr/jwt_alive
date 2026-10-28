@@ -39,11 +39,11 @@ def expand_env(text: str, environ: dict[str, str] | None = None) -> str:
 
 
 def interpolate_env(data: Any, environ: dict[str, str] | None = None) -> Any:
-    """递归地对配置中的所有字符串做环境变量插值。"""
+    """递归地对配置中的所有字符串做环境变量插值（dict 的 key 也会插值）。"""
     if isinstance(data, str):
         return expand_env(data, environ)
     if isinstance(data, dict):
-        return {key: interpolate_env(value, environ) for key, value in data.items()}
+        return {expand_env(key, environ) if isinstance(key, str) else key: interpolate_env(value, environ) for key, value in data.items()}
     if isinstance(data, list):
         return [interpolate_env(item, environ) for item in data]
     return data
@@ -119,8 +119,11 @@ def parse_config(data: dict[str, Any], source_path: Path | None = None) -> AppCo
         seen.add(site.name)
         sites.append(site)
 
+    # 顶层其余字段（auth / api 等）一并交给模型校验，未知字段会直接报错
+    payload: dict[str, Any] = {k: v for k, v in data.items() if k != 'sites'}
+    payload['sites'] = [s.model_dump() for s in sites]
     try:
-        app = AppConfig.model_validate({'defaults': defaults_raw, 'sites': [s.model_dump() for s in sites]})
+        app = AppConfig.model_validate(payload)
     except ValidationError as exc:
         raise ConfigError(f'配置无效: {exc}') from exc
 

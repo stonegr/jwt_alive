@@ -6,6 +6,7 @@ import contextlib
 from datetime import datetime
 import logging
 from pathlib import Path
+import threading
 
 from jwt_alive.adapters.loader import create_adapter, ensure_import_path
 from jwt_alive.http_client import build_client
@@ -31,6 +32,8 @@ class JwtAliveService:
         self.config_path = Path(config_path).expanduser() if config_path else None
         self.store = StateStore(state_path, self.log)
         self.runtimes: dict[str, SiteRuntime] = {}
+        # API 线程与调度器线程可能同时操作同一站点，用锁串行化
+        self._lock = threading.RLock()
 
         if plugin_path:
             ensure_import_path(plugin_path)
@@ -53,6 +56,7 @@ class JwtAliveService:
             config_path=self.config_path,
             logger=self.log,
         )
+        runtime.ensure_expiry()
         self.store.upsert(state)
         return runtime
 
@@ -64,17 +68,19 @@ class JwtAliveService:
     def check_all(self) -> dict[str, CheckResult]:
         """检查所有站点的登录态。"""
         results: dict[str, CheckResult] = {}
-        for name, runtime in self.runtimes.items():
-            try:
-                results[name] = runtime.check()
-            except Exception as exc:  # 单站异常不影响其它站点
-                self.log.exception('站点 %s 检查异常', name)
-                results[name] = CheckResult(False, f'检查异常: {exc}')
-        self.store.save()
+        with self._lock:
+            for name, runtime in self.runtimes.items():
+                try:
+                    results[name] = runtime.check()
+                except Exception as exc:  # 单站异常不影响其它站点
+                    self.log.exception('站点 %s 检查异常', name)
+                    results[name] = CheckResult(False, f'检查异常: {exc}')
+            self.store.save()
         return results
 
     def status_all(self) -> list[SiteStatus]:
-        return [runtime.status() for runtime in self.runtimes.values()]
+        with self._lock:
+            return [runtime.status() for runtime in self.runtimes.values()]
 
     # -- 刷新 ---------------------------------------------------------------------
 
@@ -82,9 +88,10 @@ class JwtAliveService:
         runtime = self.runtimes.get(name)
         if runtime is None:
             return RefreshOutcome(site=name, ok=False, reason=f'未知站点: {name}')
-        outcome = runtime.refresh(force=force)
-        self.store.upsert(runtime.state)
-        self.store.save()
+        with self._lock:
+            outcome = runtime.refresh(force=force)
+            self.store.upsert(runtime.state)
+            self.store.save()
         return outcome
 
     def refresh_all(self, force: bool = False) -> list[RefreshOutcome]:

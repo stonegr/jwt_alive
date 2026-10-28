@@ -22,9 +22,16 @@ services:
         required: false
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
+      # 对外 API 监听（配置里 api.host 为 0.0.0.0 时才需要暴露端口）
+      JWT_ALIVE_API_HOST: "${JWT_ALIVE_API_HOST:-0.0.0.0}"
+      JWT_ALIVE_API_PORT: "${JWT_ALIVE_API_PORT:-8080}"
       # 宿主机代理不会自动进容器，需要时在这里显式传入
       # HTTP_PROXY: "http://127.0.0.1:1080"
       # ALL_PROXY: "socks5h://127.0.0.1:1080"
+
+    ports:
+      # 对外 API（凭 config 里的 auth 账号访问）；不需要对外时可注释掉
+      - "${API_PORT:-8080}:8080"
 
     volumes:
       # 配置文件：按「单文件」挂载。

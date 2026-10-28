@@ -53,6 +53,14 @@ uv run jwt-alive run
 完整示例见 [`config/sites.example.yaml`](config/sites.example.yaml)。
 
 ```yaml
+auth:                            # 对外 API 账号表：用户名 -> 密码（不配则不启动 API）
+  ${API_USER:-admin}: "${API_PASSWORD:-}"
+
+api:                             # 对外 API 配置
+  enabled: true
+  host: "127.0.0.1"              # 容器内用 0.0.0.0
+  port: 8080
+
 defaults:
   scan_interval_seconds: 60     # 全局扫描间隔
   refresh_before_seconds: 300   # 剩余寿命小于该值就刷新
@@ -121,6 +129,60 @@ sites:
    - `status`：HTTP 状态码等于 `expected`
    - `json`：`path` 取到的值等于 `equals`（不填 `equals` 时只要非空即通过）
    - `cookie`：响应里存在指定 Cookie
+
+## 对外 API
+
+配置里写了 `auth` 账号表后，`jwt-alive run` 会在**同一进程内**拉起一个 HTTP 服务
+（uvicorn 后台线程，与保活调度器共享同一份状态，token 实时一致）。
+
+### 认证
+
+HTTP Basic：用户名查 `auth` 表，密码用常量时间比较（`hmac.compare_digest`）。
+
+```bash
+curl -u alice:s3cret http://127.0.0.1:8080/api/sites
+```
+
+未认证或密码错误 → `401` + `WWW-Authenticate: Basic realm="jwt-alive"`。
+
+### 端点
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/me` | 当前认证用户名 |
+| GET | `/api/health` | 守护进程健康：最后扫描时间、站点数、各站登录态 |
+| GET | `/api/sites` | 站点列表（名称/登录态/到期时间/剩余/最后刷新/最后错误） |
+| GET | `/api/sites/{name}` | 站点详情，**含 access_token / refresh_token 明文** |
+| GET | `/api/sites/{name}/token` | 只返回 token 与到期时间 |
+| POST | `/api/sites/{name}/refresh` | 触发该站点刷新，返回新 token |
+| POST | `/api/refresh-all` | 刷新全部站点 |
+
+交互式文档：`http://127.0.0.1:8080/docs`（FastAPI 自动生成）。
+
+```bash
+# 列表
+curl -u alice:s3cret http://127.0.0.1:8080/api/sites
+
+# 取 token
+curl -u alice:s3cret http://127.0.0.1:8080/api/sites/clockify/token
+
+# 触发刷新
+curl -u alice:s3cret -X POST http://127.0.0.1:8080/api/sites/clockify/refresh
+```
+
+### 行为约定
+
+- 未配置 `auth` 或 `api.enabled: false` → **不启动 API**，保活不受影响（`--no-api` 可显式关闭）
+- API 端口被占用 / 启动失败 → 只记日志，**不影响保活主流程**
+- 未知站点 → `404`；刷新业务失败 → `200` + `{"ok": false, "reason": "..."}`
+- API 与调度器并发操作同一站点时由 service 层加锁串行化
+
+### 安全提醒
+
+- API 会返回 **token 明文**，默认只监听 `127.0.0.1`；容器内需监听 `0.0.0.0` 时**务必**前置 HTTPS 反代（或用 `api.ssl_certfile` / `api.ssl_keyfile` 自签）
+- HTTP Basic 每次请求都带密码，务必只在 HTTPS 下使用
+- 密码明文存配置（与 token 同风险模型），建议 `${ENV}` 注入，且 `config/` 已在 `.gitignore` 中
+- Docker 部署时用 `ports` 暴露端口，并限制来源 IP
 
 ## 扩展：自定义站点适配器
 
@@ -276,6 +338,8 @@ jwt_alive/
 ├── models.py         配置模型 + 运行期模型
 ├── jwt_tools.py      JWT 解码、过期时间解析
 ├── adapters/         站点适配器（base / http / loader）
+├── api.py            对外 HTTP API（FastAPI）
+├── api_server.py     API 后台线程启动器
 ├── runtime.py        单站点运行时（刷新 / 校验流程）
 ├── service.py        多站点编排
 ├── scheduler.py      APScheduler 定时任务
@@ -297,9 +361,8 @@ docker-compose.yml    编排：挂载、密钥、健康检查、自动重启
 make install   # uv sync
 make dev       # 本地启动守护进程（DEBUG 日志）
 make test      # pytest
-make lint      # ruff check + ruff format --check + mypy
+make lint      # ruff check + ruff format --check
 make fmt       # ruff format + ruff check --fix
-make typecheck # mypy
 make check     # lint + test
 make help      # 查看全部命令
 ```

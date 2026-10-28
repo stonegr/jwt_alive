@@ -11,6 +11,22 @@ defaults:
   verify_tls: true
   headers: {}
   cookies: {}
+
+# ---------------------------------------------------------------------------------------
+# 对外 API 的账号表：用户名 -> 密码
+# 配了 auth 才会启动 API（jwt-alive run），用 HTTP Basic 认证
+# 密码明文存储（与 token 同风险模型），建议用 ${ENV} 注入
+# ---------------------------------------------------------------------------------------
+auth:
+  ${API_USER:-admin}: "${API_PASSWORD:-}"
+
+api:
+  enabled: true
+  host: "0.0.0.0"     # 仅本机访问可改成 127.0.0.1；容器内必须 0.0.0.0
+  port: 8080
+  # ssl_certfile: "/app/certs/cert.pem"    # 可选：自签 HTTPS（建议走反向代理）
+  # ssl_keyfile: "/app/certs/key.pem"
+
 sites:
   # 示例一：标准 exp 字段，POST 刷新，响应体返回新 token
   - name: example-standard

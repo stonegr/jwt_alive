@@ -1,0 +1,187 @@
+"""对外 API 测试。"""
+
+from __future__ import annotations
+
+import base64
+from pathlib import Path
+from typing import Any
+
+from fastapi.testclient import TestClient
+
+from jwt_alive.api import create_app
+from jwt_alive.config import parse_config
+from jwt_alive.service import JwtAliveService
+
+from .conftest import make_token
+
+
+REFRESH_URL = 'https://example.com/api/auth/refresh'
+PROFILE_URL = 'https://example.com/api/user/profile'
+USER = 'alice'
+PASSWORD = 's3cret-pwd'
+
+
+def _site(token: str) -> dict[str, Any]:
+    return {
+        'name': 'demo',
+        'token': {'access_token': token, 'refresh_token': 'rt'},
+        'jwt': {'expiry_field': 'exp'},
+        'refresh': {
+            'url': REFRESH_URL,
+            'method': 'POST',
+            'access_token_path': 'data.access_token',
+        },
+        'login_check': {'url': PROFILE_URL, 'method': 'GET'},
+    }
+
+
+def _client(tmp_path: Path, auth: dict[str, str] | None = None) -> TestClient:
+    config = parse_config(
+        {
+            'auth': auth if auth is not None else {USER: PASSWORD},
+            'sites': [_site(make_token())],
+        }
+    )
+    service = JwtAliveService(config=config, state_path=tmp_path / 'state.json')
+    app = create_app(service, config)
+    return TestClient(app)
+
+
+def _auth_header(user: str = USER, password: str = PASSWORD) -> dict[str, str]:
+    raw = base64.b64encode(f'{user}:{password}'.encode()).decode()
+    return {'Authorization': f'Basic {raw}'}
+
+
+# -- 认证 --------------------------------------------------------------------------------
+
+
+def test_requires_authentication(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/sites')
+    assert resp.status_code == 401
+    assert 'WWW-Authenticate' in resp.headers
+
+
+def test_rejects_wrong_password(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/sites', headers=_auth_header(password='wrong'))
+    assert resp.status_code == 401
+
+
+def test_rejects_unknown_user(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/sites', headers=_auth_header(user='nobody'))
+    assert resp.status_code == 401
+
+
+def test_accepts_valid_credentials(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/sites', headers=_auth_header())
+    assert resp.status_code == 200
+
+
+def test_me_returns_username(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/me', headers=_auth_header())
+    assert resp.status_code == 200
+    assert resp.json()['username'] == USER
+
+
+# -- 站点 --------------------------------------------------------------------------------
+
+
+def test_list_sites(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/sites', headers=_auth_header())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]['name'] == 'demo'
+    assert 'access_token' not in data[0]
+
+
+def test_get_site_detail_includes_token(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/sites/demo', headers=_auth_header())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['name'] == 'demo'
+    assert data['access_token'].startswith('eyJ')
+    assert data['refresh_token'] == 'rt'
+
+
+def test_get_token(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/sites/demo/token', headers=_auth_header())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['access_token'].startswith('eyJ')
+    assert data['refresh_token'] == 'rt'
+    assert data['expiry_field'] == 'exp'
+
+
+def test_unknown_site_returns_404(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/sites/nope', headers=_auth_header())
+    assert resp.status_code == 404
+    resp2 = client.get('/api/sites/nope/token', headers=_auth_header())
+    assert resp2.status_code == 404
+
+
+def test_health_endpoint(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/health', headers=_auth_header())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['status'] == 'ok'
+    assert data['site_count'] == 1
+    assert 'sites' in data
+
+
+# -- 刷新 --------------------------------------------------------------------------------
+
+
+def test_refresh_site(httpx_mock: Any, tmp_path: Path) -> None:
+    new_token = make_token(expires_in=7200)
+    httpx_mock.add_response(url=REFRESH_URL, method='POST', json={'data': {'access_token': new_token}})
+    client = _client(tmp_path)
+    resp = client.post('/api/sites/demo/refresh', headers=_auth_header())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['ok'] is True
+    assert data['access_token'] == new_token
+    assert data['site'] == 'demo'
+
+
+def test_refresh_unknown_site_returns_404(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.post('/api/sites/nope/refresh', headers=_auth_header())
+    assert resp.status_code == 404
+
+
+def test_refresh_all(httpx_mock: Any, tmp_path: Path) -> None:
+    new_token = make_token(expires_in=7200)
+    httpx_mock.add_response(url=REFRESH_URL, method='POST', json={'data': {'access_token': new_token}})
+    client = _client(tmp_path)
+    resp = client.post('/api/refresh-all', headers=_auth_header())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]['ok'] is True
+
+
+def test_refresh_failure_reports_business_error(httpx_mock: Any, tmp_path: Path) -> None:
+    httpx_mock.add_response(url=REFRESH_URL, method='POST', status_code=401, json={})
+    client = _client(tmp_path)
+    resp = client.post('/api/sites/demo/refresh', headers=_auth_header())
+    assert resp.status_code == 200
+    assert resp.json()['ok'] is False
+
+
+def test_openapi_docs_available(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/openapi.json')
+    assert resp.status_code == 200
+    paths = resp.json()['paths']
+    assert '/api/sites' in paths
+    assert '/api/sites/{name}/refresh' in paths

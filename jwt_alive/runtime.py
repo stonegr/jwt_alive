@@ -84,6 +84,18 @@ class SiteRuntime:
         """解析当前 token 的过期时间。"""
         return self.adapter.resolve_expiry(self.state.access_token)
 
+    def ensure_expiry(self) -> None:
+        """首次使用时补齐状态里的到期时间（配置里的初始 token 也要算）。"""
+        if self.state.expires_at is not None or not self.state.access_token:
+            return
+        try:
+            info = self.adapter.resolve_expiry(self.state.access_token)
+        except JwtDecodeError as exc:
+            self.log.debug('站点 %s 的初始 token 无法解析: %s', self.name, exc)
+            return
+        self.state.expires_at = info.expires_at
+        self.state.expiry_field = info.field
+
     def remaining_seconds(self, now: datetime | None = None) -> float | None:
         info = self.expiry_info()
         if info.expires_at is None:

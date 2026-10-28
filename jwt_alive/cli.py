@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.table import Table
 import typer
 
+from jwt_alive.api_server import ApiServer
 from jwt_alive.config import ConfigError, load_config
 from jwt_alive.logging_setup import setup_logging
 from jwt_alive.models import AppConfig
@@ -46,6 +47,8 @@ ENV_STATE = 'JWT_ALIVE_STATE'
 ENV_LOG_FILE = 'JWT_ALIVE_LOG_FILE'
 ENV_PLUGINS = 'JWT_ALIVE_PLUGINS'
 ENV_LOG_LEVEL = 'JWT_ALIVE_LOG_LEVEL'
+ENV_API_HOST = 'JWT_ALIVE_API_HOST'
+ENV_API_PORT = 'JWT_ALIVE_API_PORT'
 
 
 def _env_path(name: str) -> Path | None:
@@ -108,6 +111,24 @@ def find_example_config() -> Path | None:
 
 def _log_level(value: str) -> str:
     return value or os.environ.get(ENV_LOG_LEVEL, 'INFO')
+
+
+def _api_host(value: str | None) -> str | None:
+    if value is not None:
+        return value
+    return os.environ.get(ENV_API_HOST) or None
+
+
+def _api_port(value: int | None) -> int | None:
+    if value is not None:
+        return value
+    raw = os.environ.get(ENV_API_PORT)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 @app.callback()
@@ -180,11 +201,25 @@ def _fmt_time(value: object) -> str:
 
 
 @app.command()
-def run(ctx: typer.Context) -> None:
+def run(
+    ctx: typer.Context,
+    api_host: Annotated[str | None, typer.Option('--api-host', help='API 监听地址，覆盖配置')] = None,
+    api_port: Annotated[int | None, typer.Option('--api-port', help='API 监听端口，覆盖配置')] = None,
+    no_api: Annotated[bool, typer.Option('--no-api', help='不启动对外 API')] = False,
+) -> None:
     """启动保活守护进程（前台运行，Ctrl-C 退出）。"""
     logger, config = _bootstrap(ctx)
     service = _build_service(ctx, config, logger)
     scheduler = KeepAliveScheduler(service, interval_seconds=config.defaults.scan_interval_seconds, logger=logger)
+    api_server: ApiServer | None = None
+    if not no_api:
+        api_server = ApiServer(
+            service,
+            config,
+            host=_api_host(api_host),
+            port=_api_port(api_port),
+            logger=logger,
+        )
     console.print(f'[bold green]jwt-alive[/bold green] 已启动，站点 {len(service.runtimes)} 个')
     try:
         console.print('首次检查：')
@@ -192,11 +227,15 @@ def run(ctx: typer.Context) -> None:
         service.store.last_scan = now_utc()
         service.store.save()
         scheduler.start()
+        if api_server is not None:
+            api_server.start()
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         console.print('\n[yellow]正在退出...[/yellow]')
     finally:
+        if api_server is not None:
+            api_server.stop()
         scheduler.shutdown()
         service.close()
         console.print('[green]已退出[/green]')
