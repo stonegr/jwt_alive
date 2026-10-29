@@ -266,12 +266,12 @@ build-image-musl: docker-buildx-check ## ARCH=amd64 [FORCE=1] [CN=1] 构建 musl
 	@echo "✅ 镜像已构建: $(IMAGE_PREFIX)-$(ARCH_NAME)-musl"
 
 .PHONY: binary-cross
-binary-cross: ## ARCH=arm64 amd64 riscv64 ppc64le s390x 386 mips64le arm/v7 arm/v6 [CN=1]
+binary-cross: ## ARCH=arm64 amd64 riscv64 ppc64le s390x 386 mips64le arm/v7 arm/v6 [CN=1] [FORCE=1]
 	@mkdir -p $(BUILD_DIR)
 	@IMAGE_NAME=$(IMAGE_PREFIX)-$(ARCH_NAME) && \
 	if ! docker image inspect $${IMAGE_NAME} >/dev/null 2>&1; then \
 		echo "镜像 $${IMAGE_NAME} 不存在，正在构建..."; \
-		$(MAKE) build-image ARCH=$(ARCH) CN=$(CN); \
+		$(MAKE) build-image ARCH=$(ARCH) CN=$(CN) FORCE=$(FORCE); \
 	fi
 	@docker run --rm -v "$$(pwd):/dist" \
 		-w /dist \
@@ -285,12 +285,12 @@ binary-cross: ## ARCH=arm64 amd64 riscv64 ppc64le s390x 386 mips64le arm/v7 arm/
 	@rm -rf build/ $(APP_NAME)-$(ARCH_NAME).spec
 
 .PHONY: binary-cross-musl
-binary-cross-musl: ## ARCH=arm64 amd64 riscv64 ppc64le s390x 386 mips64le arm/v7 arm/v6 [CN=1]
+binary-cross-musl: ## ARCH=arm64 amd64 riscv64 ppc64le s390x 386 mips64le arm/v7 arm/v6 [CN=1] [FORCE=1]
 	@mkdir -p $(BUILD_DIR)
 	@IMAGE_NAME=$(IMAGE_PREFIX)-$(ARCH_NAME)-musl && \
 	if ! docker image inspect $${IMAGE_NAME} >/dev/null 2>&1; then \
 		echo "镜像 $${IMAGE_NAME} 不存在，正在构建..."; \
-		$(MAKE) build-image-musl ARCH=$(ARCH) CN=$(CN); \
+		$(MAKE) build-image-musl ARCH=$(ARCH) CN=$(CN) FORCE=$(FORCE); \
 	fi
 	@docker run --rm -v "$$(pwd):/dist" \
 		-w /dist \
