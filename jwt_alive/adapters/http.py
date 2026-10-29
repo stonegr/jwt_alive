@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import httpx
@@ -98,20 +99,36 @@ class HttpSiteAdapter(SiteAdapter):
             return CheckResult(True, '未配置登录态校验接口')
 
         request = self._build_check_request(cfg, state)
-        try:
-            response = self.client.request(
-                request.method,
-                request.url,
-                headers=request.headers,
-                params=request.params,
-                json=request.json_body,
-                follow_redirects=request.follow_redirects,
-                timeout=request.timeout,
-            )
-        except httpx.HTTPError as exc:
-            return CheckResult(False, '登录态校验请求失败', str(exc))
+        attempts = max(1, self.site.retry_attempts)
+        last_error: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                response = self.client.request(
+                    request.method,
+                    request.url,
+                    headers=request.headers,
+                    params=request.params,
+                    json=request.json_body,
+                    follow_redirects=request.follow_redirects,
+                    timeout=request.timeout,
+                )
+            except httpx.HTTPError as exc:
+                # 常见于服务端回收了空闲 keep-alive 连接，重试一次即可
+                last_error = exc
+                self.log.warning(
+                    '站点 %s 登录态校验请求异常（第 %d/%d 次）: %s',
+                    self.site.name,
+                    attempt,
+                    attempts,
+                    exc,
+                )
+                if attempt < attempts:
+                    time.sleep(0.5 * attempt)
+                continue
+            return self._evaluate(cfg, response)
 
-        return self._evaluate(cfg, response)
+        # 网络异常：无法判断登录态（不当作"未登录"，避免白白消耗 refresh_token）
+        return CheckResult(None, '登录态校验请求失败', str(last_error))
 
     def _build_check_request(self, cfg: LoginCheckConfig, state: SiteState) -> RequestSpec:
         context = self.template_context(state)

@@ -42,8 +42,45 @@ uv run jwt-alive run
 | `jwt-alive validate-config` | 校验配置并打印摘要 |
 | `jwt-alive init` | 生成配置模板 |
 
-全局选项：`--config/-c` 配置文件、`--state/-s` 状态文件、`--log-level/-l` 日志级别、
-`--log-file` 日志文件、`--plugins` 自定义适配器目录、`--quiet` 关闭控制台日志。
+全局选项：`--data-dir/-d` 运行根目录、`--config/-c` 配置文件、`--state/-s` 状态文件、
+`--log-level/-l` 日志级别、`--log-file` 日志文件、`--plugins` 自定义适配器目录、
+`--quiet` 关闭控制台日志。
+
+> 路径也可用环境变量指定（命令行优先）：
+> `JWT_ALIVE_DATA_DIR`、`JWT_ALIVE_CONFIG`、`JWT_ALIVE_STATE`、`JWT_ALIVE_LOG_FILE`、
+> `JWT_ALIVE_PLUGINS`、`JWT_ALIVE_LOG_LEVEL`。
+
+## 运行根目录（--data-dir）
+
+默认情况下 `config/`、`state/`、`logs/`、`plugins/` 都建在**当前工作目录**下。
+用 `--data-dir` 可以把它们统一挪到别处（NAS / systemd / 容器里特别有用）：
+
+```bash
+jwt-alive --data-dir /opt/jwt-alive run
+# → /opt/jwt-alive/config/sites.yaml
+# → /opt/jwt-alive/state/state.json
+# → /opt/jwt-alive/logs/jwt_alive.log
+# → /opt/jwt-alive/plugins/
+```
+
+目录不存在会自动创建。优先级（每个路径独立判断，从高到低）：
+
+| 路径 | 1 | 2 | 3 | 4 |
+| --- | --- | --- | --- | --- |
+| 配置 | `--config` | `JWT_ALIVE_CONFIG` | `<data-dir>/config/sites.yaml` | `CWD/config/sites.yaml` |
+| 状态 | `--state` | `JWT_ALIVE_STATE` | `<data-dir>/state/state.json` | `CWD/state/state.json` |
+| 日志 | `--log-file` | `JWT_ALIVE_LOG_FILE` | `<data-dir>/logs/jwt_alive.log` | `CWD/logs/jwt_alive.log` |
+| 适配器 | `--plugins` | `JWT_ALIVE_PLUGINS` | `<data-dir>/plugins` | `CWD/plugins` |
+
+启动时会打印实际使用的四个路径（排查"是不是同一份文件"用）：
+
+```
+运行路径
+  配置    /opt/jwt-alive/config/sites.yaml
+  状态    /opt/jwt-alive/state/state.json
+  日志    /opt/jwt-alive/logs/jwt_alive.log
+  适配器  /opt/jwt-alive/plugins
+```
 
 > 以上路径也可用环境变量指定（命令行参数优先），容器里默认已设置：
 > `JWT_ALIVE_CONFIG`、`JWT_ALIVE_STATE`、`JWT_ALIVE_LOG_FILE`、`JWT_ALIVE_PLUGINS`、`JWT_ALIVE_LOG_LEVEL`。
@@ -129,6 +166,11 @@ sites:
    - `status`：HTTP 状态码等于 `expected`
    - `json`：`path` 取到的值等于 `equals`（不填 `equals` 时只要非空即通过）
    - `cookie`：响应里存在指定 Cookie
+
+校验请求失败（网络异常/超时）会**自动重试** `retry_attempts` 次（默认 3 次，
+覆盖"服务端回收空闲 keep-alive 连接"这类瞬时错误）；仍失败则判定为
+**登录态未知**（不刷新，等下一轮扫描），避免一次网络抖动白白消耗 refresh_token。
+只有明确的 401/403 或 JWT 过期才会触发刷新。
 
 ## 对外 API
 
@@ -223,8 +265,15 @@ sites:
 
 ## Token 存放
 
-- **状态文件** `state/state.json`：运行时最新 token、到期时间、最后刷新/错误，重启后优先于配置文件使用
+- **状态文件** `state/state.json`：运行时最新 token、到期时间、最后刷新/错误
 - **回写配置文件**：`persist.write_back_to_config: true` 时，刷新成功会把新 token 写回 `config/sites.yaml`（保留 YAML 注释）
+
+两处都有 token 时，**按 token 自身的时间戳取新的**（解 JWT 比 `exp`，相同再比 `iat`），
+而不是"状态文件永远优先"——这样某一份陈旧的副本不会让老 token 一直生效，
+下一次保存时状态文件也会被自愈成新 token。非 JWT（不透明 token）无法比较时维持"状态文件优先"。
+
+> 状态文件是**运行时真相**，配置文件只是镜像/种子；多台机器共用同一份配置时，
+> 各自的 state 文件互不可见，按上面的规则各取最新的那个。
 
 > `config/sites.yaml`、`state/`、`logs/`、`.env` 都已在 `.gitignore` 中，token 不要提交到仓库。
 
@@ -299,6 +348,10 @@ docker compose down -v                              # 停止并清空状态/日�
 | `/app/state` | 命名卷 `jwt-state` | 读写 | 最新 token、扫描时间 |
 | `/app/logs` | 命名卷 `jwt-logs` | 读写 | 轮转日志文件 |
 
+容器里 `JWT_ALIVE_DATA_DIR=/app`，四个路径都从它推导（`/app/config`、`/app/state`、
+`/app/logs`、`/app/plugins`）。**改这个值要同步改上面的 volumes 挂载路径**，
+否则 state/logs 会落到容器可写层，容器重建即丢。
+
 容器以 `${UID}:${GID}` 运行（默认 1000:1000），避免把宿主文件写成 root 属主。
 **Linux 上如果 token 回写报权限错**，把宿主 uid/gid 写进 `.env`：
 
@@ -324,7 +377,10 @@ docker compose exec jwt-alive jwt-alive health --max-age 300
 
 - **代理**：宿主的 `HTTP_PROXY` / `ALL_PROXY` 不会进容器，需要在 `docker-compose.yml` 的
   `environment` 里显式传入，或用站点级 `proxy:` 配置
-- **时区**：`TZ` 只影响日志与状态展示，内部计算一律用 UTC
+- **时区**：`TZ` 影响日志与状态展示，内部过期计算一律用 UTC；
+  `schedule.cron` 按 `TZ` 指定的时区触发（没设 `TZ` 时用系统本地时区）。
+  **缺少 tzdata 时会回退 UTC**（Alpine 需 `apk add tzdata`，Debian 需 `apt install tzdata`），
+  此时 cron 会比预期偏移，回退时会打印告警
 - **token 放哪**：推荐放在 `.env`（环境变量）里，配置中用 `${VAR}` 引用，避免明文落盘
 - **更新镜像**：改完代码执行 `docker compose up -d --build` 重建并重启
 - **调试**：`docker compose exec jwt-alive sh` 进入容器，或 `make docker-shell`

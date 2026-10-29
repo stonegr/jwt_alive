@@ -1,6 +1,9 @@
 UV ?= uv
 COMPOSE := docker compose
 CONTAINER ?= jwt-alive
+# 运行根目录：config/ state/ logs/ plugins/ 的父目录
+# 用法：make dev DATA_DIR=/opt/jwt-alive
+DATA_DIR ?= .
 
 .DEFAULT_GOAL := help
 
@@ -15,32 +18,34 @@ install: ## 同步依赖 (uv sync)
 
 # ===== 开发 =====
 .PHONY: init
-init: ## 生成配置模板 (config/sites.yaml，不存在时才创建)
-	@if [ -e config/sites.yaml ] || [ -L config/sites.yaml ]; then \
-		echo "config/sites.yaml 已存在，跳过"; \
+init: ## 生成配置模板 (DATA_DIR/config/sites.yaml，不存在时才创建)
+	@if [ -e $(DATA_DIR)/config/sites.yaml ] || [ -L $(DATA_DIR)/config/sites.yaml ]; then \
+		echo "$(DATA_DIR)/config/sites.yaml 已存在，跳过"; \
 	else \
-		cp config/sites.example.yaml config/sites.yaml && echo "已生成 config/sites.yaml"; \
+		mkdir -p $(DATA_DIR)/config && \
+		cp config/sites.example.yaml $(DATA_DIR)/config/sites.yaml && \
+		echo "已生成 $(DATA_DIR)/config/sites.yaml"; \
 	fi
 
 .PHONY: dev
-dev: ## 本地开发启动保活守护进程 (DEBUG 日志)
-	$(UV) run jwt-alive --log-level DEBUG run
+dev: ## 本地开发启动保活守护进程 (DEBUG 日志) (DATA_DIR override via `make dev DATA_DIR=...`)
+	$(UV) run jwt-alive --data-dir $(DATA_DIR) --log-level DEBUG run
 
 .PHONY: start
-start: ## 生产启动保活守护进程 (INFO 日志)
-	$(UV) run jwt-alive run
+start: ## 生产启动保活守护进程 (INFO 日志) (DATA_DIR override via `make start DATA_DIR=...`)
+	$(UV) run jwt-alive --data-dir $(DATA_DIR) run
 
 .PHONY: check-site
 check-site: ## 检查所有站点登录态
-	$(UV) run jwt-alive check
+	$(UV) run jwt-alive --data-dir $(DATA_DIR) check
 
 .PHONY: status
 status: ## 查看本地状态
-	$(UV) run jwt-alive status
+	$(UV) run jwt-alive --data-dir $(DATA_DIR) status
 
 .PHONY: validate-config
 validate-config: ## 校验配置文件
-	$(UV) run jwt-alive validate-config
+	$(UV) run jwt-alive --data-dir $(DATA_DIR) validate-config
 
 # ===== 质量 =====
 .PHONY: test
@@ -241,7 +246,7 @@ build-image: docker-buildx-check ## ARCH=amd64 [FORCE=1] [CN=1] 构建预安装�
 	WORKDIR /app\n \
 	$(shell [ -f requirements.txt ] && echo 'COPY requirements.txt .' || true)\n \
 	RUN $(if $(filter 1,$(CN)),find /etc/apt/ -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i -e 's@deb.debian.org@mirrors.tuna.tsinghua.edu.cn@g' -e 's@security.debian.org@mirrors.tuna.tsinghua.edu.cn@g' {} + &&) \
-	apt-get update -y && apt-get install -y gcc g++ make libc6-dev python3-dev && apt-get clean && rm -rf /var/lib/apt/lists/*\n \
+	apt-get update -y && apt-get install -y gcc g++ make libc6-dev python3-dev tzdata && apt-get clean && rm -rf /var/lib/apt/lists/*\n \
 	RUN pip install pyinstaller --break-system-packages $(shell [ -f requirements.txt ] && echo '-r requirements.txt' || true) $(shell [ $(CN) = '1' ] && echo '-i https://pypi.tuna.tsinghua.edu.cn/simple' || true)" \
 	| docker buildx build -t $(IMAGE_PREFIX)-$(ARCH_NAME) \
 	--platform linux/$(ARCH) \
@@ -258,7 +263,7 @@ build-image-musl: docker-buildx-check ## ARCH=amd64 [FORCE=1] [CN=1] 构建 musl
 	WORKDIR /app\n \
 	$(shell [ -f requirements.txt ] && echo 'COPY requirements.txt .' || true)\n \
 	RUN $(if $(filter 1,$(CN)),sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories &&) \
-	apk add --no-cache gcc g++ make musl-dev python3-dev py3-pip zlib-dev build-base\n \
+	apk add --no-cache gcc g++ make musl-dev python3-dev py3-pip zlib-dev build-base tzdata\n \
 	RUN pip install pyinstaller --break-system-packages $(shell [ -f requirements.txt ] && echo '-r requirements.txt' || true) $(shell [ $(CN) = '1' ] && echo '-i https://pypi.tuna.tsinghua.edu.cn/simple' || true)" \
 	| docker buildx build -t $(IMAGE_PREFIX)-$(ARCH_NAME)-musl \
 	--platform linux/$(ARCH) \

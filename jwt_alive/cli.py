@@ -34,13 +34,17 @@ err_console = Console(stderr=True)
 
 ConfigOpt = Annotated[
     Path | None,
-    typer.Option('--config', '-c', help='配置文件路径，默认 config/sites.yaml'),
+    typer.Option('--config', '-c', help='配置文件路径，默认 <data-dir>/config/sites.yaml'),
 ]
-StateOpt = Annotated[Path | None, typer.Option('--state', '-s', help='状态文件路径，默认 state/state.json')]
+StateOpt = Annotated[Path | None, typer.Option('--state', '-s', help='状态文件路径，默认 <data-dir>/state/state.json')]
 LevelOpt = Annotated[str, typer.Option('--log-level', '-l', help='日志级别 DEBUG/INFO/WARN/ERROR')]
 LogFileOpt = Annotated[Path | None, typer.Option('--log-file', help='日志文件路径')]
-PluginOpt = Annotated[Path | None, typer.Option('--plugins', help='自定义适配器目录，默认 plugins/')]
+PluginOpt = Annotated[Path | None, typer.Option('--plugins', help='自定义适配器目录，默认 <data-dir>/plugins')]
 QuietOpt = Annotated[bool, typer.Option('--quiet', help='不输出控制台日志')]
+DataDirOpt = Annotated[
+    Path | None,
+    typer.Option('--data-dir', '-d', help='运行根目录：config/ state/ logs/ plugins/ 的父目录'),
+]
 
 ENV_CONFIG = 'JWT_ALIVE_CONFIG'
 ENV_STATE = 'JWT_ALIVE_STATE'
@@ -49,6 +53,7 @@ ENV_PLUGINS = 'JWT_ALIVE_PLUGINS'
 ENV_LOG_LEVEL = 'JWT_ALIVE_LOG_LEVEL'
 ENV_API_HOST = 'JWT_ALIVE_API_HOST'
 ENV_API_PORT = 'JWT_ALIVE_API_PORT'
+ENV_DATA_DIR = 'JWT_ALIVE_DATA_DIR'
 
 
 def _env_path(name: str) -> Path | None:
@@ -56,53 +61,67 @@ def _env_path(name: str) -> Path | None:
     return Path(raw).expanduser() if raw else None
 
 
-def _config_path(value: Path | None) -> Path:
+def _data_dir(value: Path | None) -> Path | None:
+    """运行根目录：只来自命令行/环境变量（不从配置文件读，避免循环依赖）。"""
+    if value is not None:
+        return value.expanduser()
+    return _env_path(ENV_DATA_DIR)
+
+
+def _config_path(value: Path | None, data_dir: Path | None = None) -> Path:
     if value is not None:
         return value.expanduser()
     env = _env_path(ENV_CONFIG)
     if env is not None:
         return env
-    return Path.cwd() / 'config' / 'sites.yaml'
+    base = data_dir if data_dir is not None else Path.cwd()
+    return base / 'config' / 'sites.yaml'
 
 
-def _state_path(value: Path | None) -> Path:
+def _state_path(value: Path | None, data_dir: Path | None = None) -> Path:
     if value is not None:
         return value.expanduser()
     env = _env_path(ENV_STATE)
     if env is not None:
         return env
-    return Path.cwd() / 'state' / 'state.json'
+    base = data_dir if data_dir is not None else Path.cwd()
+    return base / 'state' / 'state.json'
 
 
-def _log_file_path(value: Path | None) -> Path:
+def _log_file_path(value: Path | None, data_dir: Path | None = None) -> Path:
     if value is not None:
         return value.expanduser()
     env = _env_path(ENV_LOG_FILE)
     if env is not None:
         return env
-    return Path.cwd() / 'logs' / 'jwt_alive.log'
+    base = data_dir if data_dir is not None else Path.cwd()
+    return base / 'logs' / 'jwt_alive.log'
 
 
-def _plugin_path(value: Path | None) -> Path:
+def _plugin_path(value: Path | None, data_dir: Path | None = None) -> Path:
     if value is not None:
         return value.expanduser()
     env = _env_path(ENV_PLUGINS)
     if env is not None:
         return env
-    return Path.cwd() / 'plugins'
+    base = data_dir if data_dir is not None else Path.cwd()
+    return base / 'plugins'
 
 
 EXAMPLE_CONFIG_NAME = 'sites.example.yaml'
 EXAMPLE_CONFIG_DIRS = (
     Path('/usr/share/jwt-alive'),  # 容器镜像内的位置
     Path(__file__).resolve().parent.parent / 'config',  # 仓库 / 可编辑安装
-    Path.cwd() / 'config',
 )
 
 
-def find_example_config() -> Path | None:
+def find_example_config(data_dir: Path | None = None) -> Path | None:
     """查找示例配置模板（容器里可能不在包目录旁边）。"""
-    for directory in EXAMPLE_CONFIG_DIRS:
+    candidates = list(EXAMPLE_CONFIG_DIRS)
+    if data_dir is not None:
+        candidates.append(data_dir / 'config')
+    candidates.append(Path.cwd() / 'config')
+    for directory in candidates:
         candidate = directory / EXAMPLE_CONFIG_NAME
         if candidate.is_file():
             return candidate
@@ -140,13 +159,16 @@ def root(
     log_file: LogFileOpt = None,
     plugins: PluginOpt = None,
     quiet: QuietOpt = False,
+    data_dir: DataDirOpt = None,
 ) -> None:
     """全局选项。"""
+    base = _data_dir(data_dir)
     ctx.obj = {
-        'config_path': _config_path(config),
-        'state_path': _state_path(state),
-        'log_path': _log_file_path(log_file),
-        'plugin_path': _plugin_path(plugins),
+        'data_dir': base,
+        'config_path': _config_path(config, base),
+        'state_path': _state_path(state, base),
+        'log_path': _log_file_path(log_file, base),
+        'plugin_path': _plugin_path(plugins, base),
         'log_level': _log_level(log_level),
         'quiet': quiet,
     }
@@ -200,6 +222,23 @@ def _fmt_time(value: object) -> str:
     return str(value).replace('T', ' ')[:19]
 
 
+def _render_paths(ctx: typer.Context) -> None:
+    """打印实际使用的四个路径（排查"是不是同一份文件"用）。"""
+    opts: dict[str, Any] = ctx.obj or {}
+    rows = [
+        ('配置', opts.get('config_path')),
+        ('状态', opts.get('state_path')),
+        ('日志', opts.get('log_path')),
+        ('适配器', opts.get('plugin_path')),
+    ]
+    table = Table(title='运行路径', show_header=False, box=None)
+    table.add_column()
+    table.add_column()
+    for label, value in rows:
+        table.add_row(label, str(value))
+    console.print(table)
+
+
 @app.command()
 def run(
     ctx: typer.Context,
@@ -221,6 +260,7 @@ def run(
             logger=logger,
         )
     console.print(f'[bold green]jwt-alive[/bold green] 已启动，站点 {len(service.runtimes)} 个')
+    _render_paths(ctx)
     try:
         console.print('首次检查：')
         _render_check_results(service.check_all())
@@ -320,6 +360,7 @@ def status(ctx: typer.Context) -> None:
     setup_logging(level=str(opts.get('log_level', 'INFO')), log_file=None, console=False)
     store = StateStore(opts['state_path'])
     states = store.all()
+    console.print(f'[dim]state 文件：{opts["state_path"]}[/dim]', soft_wrap=True)
     if not states:
         console.print('[yellow]暂无状态记录，先运行 jwt-alive check[/yellow]')
         return
@@ -379,7 +420,7 @@ def init(
     """生成示例配置文件。"""
     opts: dict[str, Any] = ctx.obj or {}
     out_path = target.expanduser() if target else opts['config_path']
-    example = find_example_config()
+    example = find_example_config(opts.get('data_dir'))
     if example is None:
         err_console.print('[red]找不到示例配置模板[/red]')
         raise typer.Exit(code=2)
@@ -401,8 +442,14 @@ def _render_check_results(results: dict[str, Any]) -> None:
     for col in ('站点', '已登录', '说明'):
         table.add_column(col)
     for name, result in results.items():
-        logged = '[green]是[/green]' if result.logged_in else '[red]否[/red]'
-        table.add_row(name, logged, result.reason)
+        if result.logged_in is None:
+            logged = '[yellow]未知[/yellow]'
+        elif result.logged_in:
+            logged = '[green]是[/green]'
+        else:
+            logged = '[red]否[/red]'
+        reason = result.reason if result.detail is None else f'{result.reason}（{result.detail}）'
+        table.add_row(name, logged, reason)
     console.print(table)
 
 

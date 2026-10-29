@@ -50,10 +50,7 @@ RUN if [ "${APT_MIRROR}" != "deb.debian.org" ]; then \
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH" \
-    JWT_ALIVE_CONFIG=/app/config/sites.yaml \
-    JWT_ALIVE_STATE=/app/state/state.json \
-    JWT_ALIVE_LOG_FILE=/app/logs/jwt_alive.log \
-    JWT_ALIVE_PLUGINS=/app/plugins \
+    JWT_ALIVE_DATA_DIR=/app \
     TZ=Asia/Shanghai
 
 COPY --from=builder /app/.venv /app/.venv

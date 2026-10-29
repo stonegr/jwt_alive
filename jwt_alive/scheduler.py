@@ -2,16 +2,40 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 import logging
+import os
+from typing import Any
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from tzlocal import get_localzone
 
 from jwt_alive.models import SiteConfig
 from jwt_alive.service import JwtAliveService
 from jwt_alive.utils import now_utc
+
+
+def resolve_timezone(logger: logging.Logger | None = None) -> Any:
+    """解析本地时区：优先 TZ 环境变量，其次系统本地时区，最后回退 UTC。
+
+    缺少 tzdata 时 tzlocal 会退化成 UTC 并打印警告，导致 cron 触发时间偏移，
+    这里显式解析并给出清晰提示。
+    """
+    name = os.environ.get('TZ')
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception as exc:
+            if logger is not None:
+                logger.warning('TZ=%s 无法加载时区（系统缺少 tzdata？），回退 UTC: %s', name, exc)
+            return UTC
+    try:
+        return get_localzone()
+    except Exception:
+        return UTC
 
 
 class KeepAliveScheduler:
@@ -31,7 +55,8 @@ class KeepAliveScheduler:
         self.service = service
         self.interval_seconds = max(1, interval_seconds)
         self.log = logger or logging.getLogger(__name__)
-        self.scheduler = BackgroundScheduler(timezone='UTC')
+        self.timezone = resolve_timezone(self.log)
+        self.scheduler = BackgroundScheduler(timezone=self.timezone)
         self._last_scan: dict[str, datetime] = {}
 
     # -- 生命周期 -----------------------------------------------------------------
@@ -50,7 +75,7 @@ class KeepAliveScheduler:
             if site.schedule.cron:
                 self.scheduler.add_job(
                     self._force_refresh,
-                    trigger=CronTrigger.from_crontab(site.schedule.cron),
+                    trigger=CronTrigger.from_crontab(site.schedule.cron, timezone=self.timezone),
                     args=[site.name],
                     id=f'cron-{site.name}',
                     replace_existing=True,
@@ -94,7 +119,16 @@ class KeepAliveScheduler:
             return
 
         result = runtime.check()
-        if not result.logged_in:
+        if result.logged_in is None:
+            # 网络异常/超时：无法判断登录态，不刷新，等下一轮扫描
+            self.log.warning(
+                '站点 %s 登录态未知(%s)：%s，本轮跳过',
+                name,
+                result.reason,
+                result.detail or '',
+            )
+            return
+        if result.logged_in is False:
             self.log.info('站点 %s 登录态异常(%s)，触发刷新', name, result.reason)
             self.service.refresh_site(name, force=True)
             return

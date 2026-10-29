@@ -206,6 +206,45 @@ def is_expired(info: ExpiryInfo, now: datetime | None = None, leeway: int = 0) -
     return remaining <= 0
 
 
+def token_exp_iat(token: str) -> tuple[datetime | None, datetime | None]:
+    """返回 token 的 (exp, iat)；非 JWT 或解析失败返回 (None, None)。
+
+    用于比较「配置里的 token」与「状态文件里的 token」哪个更新。
+    """
+    if not token:
+        return None, None
+    try:
+        payload = decode_payload(token)
+    except JwtDecodeError:
+        return None, None
+
+    def _to_dt(value: Any) -> datetime | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        try:
+            return datetime.fromtimestamp(float(value), tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    return _to_dt(payload.get('exp')), _to_dt(payload.get('iat'))
+
+
+def is_newer_token(candidate: str, current: str) -> bool:
+    """candidate 是否比 current 更新（按 exp，相同比 iat）。
+
+    无法比较（非 JWT / 缺少 exp）时返回 False，保持"现状优先"。
+    """
+    cand_exp, cand_iat = token_exp_iat(candidate)
+    cur_exp, cur_iat = token_exp_iat(current)
+    if cand_exp is None or cur_exp is None:
+        return False
+    if cand_exp != cur_exp:
+        return cand_exp > cur_exp
+    if cand_iat is None or cur_iat is None:
+        return False
+    return cand_iat > cur_iat
+
+
 def decode_and_resolve(
     token: str,
     jwt_config: JwtConfig | None = None,

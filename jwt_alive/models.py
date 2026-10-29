@@ -325,9 +325,15 @@ class TokenBundle:
 
 @dataclass(slots=True)
 class CheckResult:
-    """登录态校验结果。"""
+    """登录态校验结果。
 
-    logged_in: bool
+    logged_in:
+        True  = 已登录
+        False = 确定未登录（401/403、token 过期等）→ 需要刷新
+        None  = 无法判断（网络异常/超时）→ 不刷新，等下一轮扫描
+    """
+
+    logged_in: bool | None
     reason: str
     detail: str | None = None
 

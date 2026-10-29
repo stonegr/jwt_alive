@@ -32,10 +32,15 @@ def setup_logging(
     file_path: Path | None = None
     if log_file is not None:
         file_path = Path(log_file).expanduser()
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(file_path, maxBytes=5 * 1024 * 1024, backupCount=5, encoding='utf-8')
-        file_handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT))
-        root.addHandler(file_handler)
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(file_path, maxBytes=5 * 1024 * 1024, backupCount=5, encoding='utf-8')
+            file_handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT))
+            root.addHandler(file_handler)
+        except OSError as exc:
+            # 日志目录不可写（NAS 上常见）：降级为只输出控制台，不让守护进程起不来
+            root.warning('日志文件不可写（%s：%s），仅输出到控制台', file_path, exc)
+            file_path = None
 
     logging.getLogger('httpx').setLevel(logging.WARNING)
     logging.getLogger('httpcore').setLevel(logging.WARNING)

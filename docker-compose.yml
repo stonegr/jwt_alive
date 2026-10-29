@@ -22,6 +22,9 @@ services:
         required: false
     environment:
       TZ: "${TZ:-Asia/Shanghai}"
+      # 运行根目录：config/ state/ logs/ plugins/ 的父目录
+      # 改这个值要同步改下面的 volumes 挂载路径，否则 state/logs 会落到容器可写层
+      JWT_ALIVE_DATA_DIR: "${JWT_ALIVE_DATA_DIR:-/app}"
       # 对外 API 监听（配置里 api.host 为 0.0.0.0 时才需要暴露端口）
       JWT_ALIVE_API_HOST: "${JWT_ALIVE_API_HOST:-0.0.0.0}"
       JWT_ALIVE_API_PORT: "${JWT_ALIVE_API_PORT:-8080}"

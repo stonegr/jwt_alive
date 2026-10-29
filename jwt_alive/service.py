@@ -10,7 +10,8 @@ import threading
 
 from jwt_alive.adapters.loader import create_adapter, ensure_import_path
 from jwt_alive.http_client import build_client
-from jwt_alive.models import AppConfig, CheckResult, SiteConfig
+from jwt_alive.jwt_tools import is_newer_token
+from jwt_alive.models import AppConfig, CheckResult, SiteConfig, SiteState
 from jwt_alive.runtime import RefreshOutcome, SiteRuntime, SiteStatus
 from jwt_alive.state import StateStore
 from jwt_alive.utils import now_utc
@@ -56,9 +57,29 @@ class JwtAliveService:
             config_path=self.config_path,
             logger=self.log,
         )
+        self._prefer_newer_token(site, state)
         runtime.ensure_expiry()
         self.store.upsert(state)
         return runtime
+
+    def _prefer_newer_token(self, site: SiteConfig, state: SiteState) -> None:
+        """配置与状态各有一份 token 时，按 JWT 自身时间戳选新的。
+
+        避免「某份陈旧的 state 副本」一直压过更新的配置，导致老 token 一直生效。
+        """
+        config_token = site.token.access_token
+        state_token = state.access_token
+        if not config_token or not state_token or config_token == state_token:
+            return
+        if not is_newer_token(config_token, state_token):
+            return
+        state.access_token = config_token
+        if site.token.refresh_token:
+            state.refresh_token = site.token.refresh_token
+        self.log.info(
+            '站点 %s：配置里的 token 更新，已改用配置版本（避免陈旧状态压过新 token）',
+            site.name,
+        )
 
     # -- 查询 ---------------------------------------------------------------------
 
@@ -74,7 +95,7 @@ class JwtAliveService:
                     results[name] = runtime.check()
                 except Exception as exc:  # 单站异常不影响其它站点
                     self.log.exception('站点 %s 检查异常', name)
-                    results[name] = CheckResult(False, f'检查异常: {exc}')
+                    results[name] = CheckResult(None, f'检查异常: {exc}', str(exc))
             self.store.save()
         return results
 
