@@ -32,6 +32,10 @@ class RefreshError(Exception):
     """刷新失败。"""
 
 
+class AuthRejectedError(RefreshError):
+    """服务端明确拒绝（401/403）→ 会话已失效，登录态应置为未登录。"""
+
+
 @dataclass(slots=True)
 class RefreshOutcome:
     """刷新结果。"""
@@ -272,6 +276,11 @@ class SiteRuntime:
             request = self.adapter.build_refresh_request(self.state)
             response = self._send(request)
             bundle = self.adapter.extract_tokens(response)
+        except AuthRejectedError as exc:
+            # 服务端明确拒绝 → 会话已失效
+            self._on_failure(str(exc))
+            self.state.logged_in = False
+            return RefreshOutcome(site=self.name, ok=False, reason=str(exc))
         except RefreshError as exc:
             self._on_failure(str(exc))
             return RefreshOutcome(site=self.name, ok=False, reason=str(exc))
@@ -291,7 +300,6 @@ class SiteRuntime:
             refresh_token=bundle.refresh_token or self.state.refresh_token,
         )
         new_info = self._update_expiry(new_state)
-        new_state.logged_in = self.state.logged_in
         new_state.last_check = self.state.last_check
         new_state.last_refresh = now_utc()
         new_state.consecutive_failures = 0
@@ -370,7 +378,7 @@ class SiteRuntime:
             else:
                 if response.status_code < 500:
                     if response.status_code >= 400:
-                        raise RefreshError(f'刷新接口返回 HTTP {response.status_code}: {truncate(response.text, 200)}')
+                        raise AuthRejectedError(f'刷新接口返回 HTTP {response.status_code}: {truncate(response.text, 200)}')
                     return response
                 last_error = RefreshError(f'刷新接口返回 HTTP {response.status_code}')
                 if attempt < attempts:
@@ -419,9 +427,10 @@ class SiteRuntime:
         self.log.error('站点 %s 刷新失败: %s', self.name, reason)
 
     def _on_success(self) -> None:
+        # 刷新成功即证明会话有效（服务端认了 refresh token 并签发了新 access token）
+        self.state.logged_in = True
         self.state.consecutive_failures = 0
         self.state.last_error = None
-        self.state.last_check = now_utc()
 
     # -- 展示 ---------------------------------------------------------------------
 

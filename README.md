@@ -345,6 +345,13 @@ sites:
 - **状态文件** `state/state.json`：运行时最新 token、到期时间、最后刷新/错误
 - **回写配置文件**：`persist.write_back_to_config: true` 时，刷新成功会把新 token 写回 `config/sites.yaml`（保留 YAML 注释）
 
+`state.logged_in` 的更新时机：
+
+- **刷新成功** → 立即置为 `true`（刷新成功本身就证明会话有效：服务端认了 refresh token 并签发了新 access token），不必等下一轮扫描
+- **刷新被服务端拒绝（401/403）** → 置为 `false`（会话已失效）
+- **刷新因网络异常/5xx 失败** → 保持原值（只是没拿到结果，不代表会话失效；错误记在 `last_error` 与 `consecutive_failures`）
+- 每轮扫描的 `check()` 结论也会刷新这个字段
+
 两处都有 token 时，**按 token 自身的时间戳取新的**（解 JWT 比 `exp`，相同再比 `iat`），
 而不是"状态文件永远优先"——这样某一份陈旧的副本不会让老 token 一直生效，
 下一次保存时状态文件也会被自愈成新 token。非 JWT（不透明 token）无法比较时维持"状态文件优先"。
