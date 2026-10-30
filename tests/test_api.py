@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 from typing import Any
 
@@ -53,9 +52,9 @@ def _client(
     return TestClient(app)
 
 
-def _auth_header(user: str = USER, password: str = PASSWORD) -> dict[str, str]:
-    raw = base64.b64encode(f'{user}:{password}'.encode()).decode()
-    return {'Authorization': f'Basic {raw}'}
+def _auth_header(token: str = PASSWORD) -> dict[str, str]:
+    """默认用 Authorization: Bearer 头。"""
+    return {'Authorization': f'Bearer {token}'}
 
 
 # -- 认证 --------------------------------------------------------------------------------
@@ -68,29 +67,71 @@ def test_requires_authentication(tmp_path: Path) -> None:
     assert 'WWW-Authenticate' in resp.headers
 
 
-def test_rejects_wrong_password(tmp_path: Path) -> None:
+def test_rejects_wrong_token(tmp_path: Path) -> None:
     client = _client(tmp_path)
-    resp = client.get('/api/sites', headers=_auth_header(password='wrong'))
+    resp = client.get('/api/sites', headers=_auth_header(token='wrong-token'))
     assert resp.status_code == 401
 
 
-def test_rejects_unknown_user(tmp_path: Path) -> None:
+def test_rejects_missing_token_header(tmp_path: Path) -> None:
     client = _client(tmp_path)
-    resp = client.get('/api/sites', headers=_auth_header(user='nobody'))
+    resp = client.get('/api/sites')
     assert resp.status_code == 401
+
+
+def test_rejects_empty_token_header(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/sites', headers={'Authorization': 'Bearer '})
+    assert resp.status_code == 401
+
+
+def test_accepts_x_token_header(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/sites', headers={'X-Token': PASSWORD})
+    assert resp.status_code == 200
+
+
+def test_accepts_x_api_key_header(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/sites', headers={'X-API-Key': PASSWORD})
+    assert resp.status_code == 200
+
+
+def test_accepts_bare_token_without_bearer_prefix(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/sites', headers={'Authorization': PASSWORD})
+    assert resp.status_code == 200
+
+
+def test_error_message_does_not_leak(tmp_path: Path) -> None:
+    """token 不匹配与没有 token 的响应一致，不泄露有效 token 的存在性。"""
+    client = _client(tmp_path)
+    wrong = client.get('/api/sites', headers=_auth_header(token='wrong'))
+    missing = client.get('/api/sites')
+    assert wrong.status_code == missing.status_code == 401
+    assert wrong.json() == missing.json()
+
+
+def test_me_returns_matched_identifier(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    resp = client.get('/api/me', headers=_auth_header())
+    assert resp.status_code == 200
+    assert resp.json()['id'] == USER
+
+
+def test_multiple_identifiers_each_match_own_token(tmp_path: Path) -> None:
+    client = _client(tmp_path, auth={'alice': 'token-a', 'bob': 'token-b'})
+    resp_a = client.get('/api/me', headers=_auth_header(token='token-a'))
+    resp_b = client.get('/api/me', headers=_auth_header(token='token-b'))
+    assert resp_a.json()['id'] == 'alice'
+    assert resp_b.json()['id'] == 'bob'
+    assert client.get('/api/me', headers=_auth_header(token='token-c')).status_code == 401
 
 
 def test_accepts_valid_credentials(tmp_path: Path) -> None:
     client = _client(tmp_path)
     resp = client.get('/api/sites', headers=_auth_header())
     assert resp.status_code == 200
-
-
-def test_me_returns_username(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-    resp = client.get('/api/me', headers=_auth_header())
-    assert resp.status_code == 200
-    assert resp.json()['username'] == USER
 
 
 # -- 站点 --------------------------------------------------------------------------------

@@ -300,14 +300,19 @@ class AppConfig(_Base):
                 return site
         return None
 
-    def verify_password(self, username: str, password: str) -> bool:
-        """校验 API 账号密码（常量时间比较，防时序攻击）。"""
-        expected = self.auth.get(username)
-        if expected is None:
-            # 用户不存在时也要走一次比较，避免通过耗时区分用户是否存在
-            hmac.compare_digest(password, password)
-            return False
-        return hmac.compare_digest(password, expected)
+    def verify_token(self, token: str | None) -> str | None:
+        """校验请求里的 token：值命中 auth 表中任意一项即通过，返回该项的 key（标识）。
+
+        key 只是标识、不参与校验；所有条目都做一次常量时间比较，
+        避免通过耗时/命中位置推断命中的是哪一个。
+        """
+        if not token:
+            return None
+        matched: str | None = None
+        for name, expected in self.auth.items():
+            if hmac.compare_digest(token, expected) and matched is None:
+                matched = name
+        return matched
 
 
 # --------------------------------------------------------------------------------------

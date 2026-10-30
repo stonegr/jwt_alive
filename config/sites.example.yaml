@@ -13,12 +13,13 @@ defaults:
   cookies: {}
 
 # ---------------------------------------------------------------------------------------
-# 对外 API 的账号表：用户名 -> 密码
-# 配了 auth 才会启动 API（jwt-alive run），用 HTTP Basic 认证
-# 密码明文存储（与 token 同风险模型），建议用 ${ENV} 注入
+# 对外 API 的 token 表：key = 标识（仅用于区分是谁，不参与校验）-> value = 允许的 token 值
+# 配了 auth 才会启动 API（jwt-alive run）
+# 请求时把 value 放在请求头：Authorization: Bearer <token> / X-Token / X-API-Key
+# token 明文存储（与站点 token 同风险模型），建议用 ${ENV} 注入
 # ---------------------------------------------------------------------------------------
 auth:
-  ${API_USER:-admin}: "${API_PASSWORD:-}"
+  ${API_ID:-default}: "${API_TOKEN:-}"
 
 api:
   enabled: true

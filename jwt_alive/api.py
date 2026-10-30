@@ -10,8 +10,7 @@ from datetime import datetime
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from .models import AppConfig
@@ -22,32 +21,52 @@ from .utils import now_utc
 log = logging.getLogger(__name__)
 
 REALM = 'jwt-alive'
-security = HTTPBasic(auto_error=False)
+
+
+def extract_token(
+    authorization: str | None,
+    x_token: str | None,
+    x_api_key: str | None,
+) -> str | None:
+    """从请求头里取 token（按优先级）。
+
+    Authorization  支持 `Bearer <token>` 与不带前缀的裸 token；
+    其次 X-Token、X-API-Key。
+    """
+    if authorization:
+        value = authorization.strip()
+        if value.lower().startswith('bearer '):
+            value = value[7:].strip()
+        if value:
+            return value
+    for candidate in (x_token, x_api_key):
+        if candidate and candidate.strip():
+            return candidate.strip()
+    return None
 
 
 def authenticate(
     request: Request,
-    credentials: Annotated[HTTPBasicCredentials | None, Depends(security)],
+    authorization: Annotated[str | None, Header()] = None,
+    x_token: Annotated[str | None, Header()] = None,
+    x_api_key: Annotated[str | None, Header()] = None,
 ) -> str:
-    """HTTP Basic 认证：用户名查表 + 密码常量时间比对。
+    """用请求头里的 token 认证：值命中 auth 表中任意一项即通过，返回该项的 key（标识）。
 
     账号表放在 app.state.config 上，这里是模块级函数，便于 FastAPI 解析依赖。
     """
-    if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='需要认证（HTTP Basic）',
-            headers={'WWW-Authenticate': f'Basic realm="{REALM}"'},
-        )
+    token = extract_token(authorization, x_token, x_api_key)
     config: AppConfig = request.app.state.config
-    if not config.verify_password(credentials.username, credentials.password):
-        log.warning('API 认证失败：用户 %s', credentials.username)
+    identity = config.verify_token(token)
+    if identity is None:
+        log.warning('API 认证失败：token 未命中 auth 表')
+        # 不区分"标识不存在"与"token 不匹配"，避免泄露有效 token 的存在性
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='用户名或密码错误',
-            headers={'WWW-Authenticate': f'Basic realm="{REALM}"'},
+            detail='token 无效',
+            headers={'WWW-Authenticate': f'Bearer realm="{REALM}"'},
         )
-    return credentials.username
+    return identity
 
 
 CurrentUser = Annotated[str, Depends(authenticate)]
@@ -111,9 +130,9 @@ class HealthOut(BaseModel):
 
 
 class MeOut(BaseModel):
-    """当前认证用户。"""
+    """当前认证身份（auth 表里命中的 key，仅作标识）。"""
 
-    username: str
+    id: str
 
 
 # --------------------------------------------------------------------------------------
@@ -142,11 +161,11 @@ def create_app(service: JwtAliveService, config: AppConfig, prefix: str | None =
     app.state.service = service
 
     @router.get('/me', response_model=MeOut, summary='当前认证用户')
-    def me(username: CurrentUser) -> MeOut:
-        return MeOut(username=username)
+    def me(client_id: CurrentUser) -> MeOut:
+        return MeOut(id=client_id)
 
     @router.get('/health', response_model=HealthOut, summary='健康状态')
-    def health(username: CurrentUser) -> HealthOut:
+    def health(client_id: CurrentUser) -> HealthOut:
         statuses = service.status_all()
         last_scan = service.store.last_scan
         age = (now_utc() - last_scan).total_seconds() if last_scan else None
@@ -160,11 +179,11 @@ def create_app(service: JwtAliveService, config: AppConfig, prefix: str | None =
         )
 
     @router.get('/sites', response_model=list[SiteOut], summary='站点列表')
-    def list_sites(username: CurrentUser) -> list[SiteOut]:
+    def list_sites(client_id: CurrentUser) -> list[SiteOut]:
         return [_site_out(s) for s in service.status_all()]
 
     @router.get('/sites/{name}', response_model=SiteDetailOut, summary='站点详情（含 token）')
-    def get_site(name: str, username: CurrentUser) -> SiteDetailOut:
+    def get_site(name: str, client_id: CurrentUser) -> SiteDetailOut:
         runtime = service.get_runtime(name)
         if runtime is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f'未知站点：{name}')
@@ -176,7 +195,7 @@ def create_app(service: JwtAliveService, config: AppConfig, prefix: str | None =
         )
 
     @router.get('/sites/{name}/token', response_model=TokenOut, summary='获取站点 token')
-    def get_token(name: str, username: CurrentUser) -> TokenOut:
+    def get_token(name: str, client_id: CurrentUser) -> TokenOut:
         runtime = service.get_runtime(name)
         if runtime is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f'未知站点：{name}')
@@ -188,7 +207,7 @@ def create_app(service: JwtAliveService, config: AppConfig, prefix: str | None =
         )
 
     @router.post('/sites/{name}/refresh', response_model=RefreshOut, summary='触发站点刷新')
-    def refresh_site(name: str, username: CurrentUser) -> RefreshOut:
+    def refresh_site(name: str, client_id: CurrentUser) -> RefreshOut:
         runtime = service.get_runtime(name)
         if runtime is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f'未知站点：{name}')
@@ -203,7 +222,7 @@ def create_app(service: JwtAliveService, config: AppConfig, prefix: str | None =
         )
 
     @router.post('/refresh-all', response_model=list[RefreshOut], summary='刷新全部站点')
-    def refresh_all(username: CurrentUser) -> list[RefreshOut]:
+    def refresh_all(client_id: CurrentUser) -> list[RefreshOut]:
         return [
             RefreshOut(
                 site=o.site,

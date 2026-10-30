@@ -90,8 +90,8 @@ jwt-alive --data-dir /opt/jwt-alive run
 完整示例见 [`config/sites.example.yaml`](config/sites.example.yaml)。
 
 ```yaml
-auth:                            # 对外 API 账号表：用户名 -> 密码（不配则不启动 API）
-  ${API_USER:-admin}: "${API_PASSWORD:-}"
+auth:                            # 对外 API 的 token 表：标识 -> 允许的 token 值（不配则不启动 API）
+  ${API_ID:-default}: "${API_TOKEN:-}"
 
 api:                             # 对外 API 配置
   enabled: true
@@ -186,13 +186,34 @@ sites:
 
 ### 认证
 
-HTTP Basic：用户名查 `auth` 表，密码用常量时间比较（`hmac.compare_digest`）。
+`auth` 是一张 **token 表**：`key` 只是标识（用来区分是谁，不参与校验），`value` 是允许的 token 值：
 
-```bash
-curl -u alice:s3cret http://127.0.0.1:8080/api/sites
+```yaml
+auth:
+  my-client: "${CLIENT_A_TOKEN}"    # 标识 -> 允许的 token 值
+  other: "${CLIENT_B_TOKEN}"
 ```
 
-未认证或密码错误 → `401` + `WWW-Authenticate: Basic realm="jwt-alive"`。
+请求时把 token 放在**请求头**里（按优先级尝试，三种都行）：
+
+| 顺序 | 请求头 | 示例 |
+| --- | --- | --- |
+| 1 | `Authorization` | `Authorization: Bearer eyJhbGci...`（也接受不带 `Bearer ` 的裸 token） |
+| 2 | `X-Token` | `X-Token: eyJhbGci...` |
+| 3 | `X-API-Key` | `X-API-Key: eyJhbGci...` |
+
+```bash
+curl -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:8080/api/sites
+curl -H "X-Token: $API_TOKEN"          http://127.0.0.1:8080/api/sites
+```
+
+校验方式：token 值与 `auth` 表里所有 value 做**常量时间比较**（`hmac.compare_digest`），
+命中任意一项即通过，**返回该项的 key 作为身份**（`GET /api/me` 返回 `{"id": "my-client"}`）。
+
+未带 token 或 token 不匹配 → `401 {"detail":"token 无效"}`，
+两种情况的响应完全一致（探测不出哪些 token 有效）。
+
+> `auth` 为空则 API 不启动（保活不受影响）。
 
 ### 路径前缀
 
@@ -249,7 +270,7 @@ curl -u alice:s3cret -X POST http://127.0.0.1:8080/api/sites/clockify/refresh
 ### 安全提醒
 
 - API 会返回 **token 明文**，默认只监听 `127.0.0.1`；容器内需监听 `0.0.0.0` 时**务必**前置 HTTPS 反代（或用 `api.ssl_certfile` / `api.ssl_keyfile` 自签）
-- HTTP Basic 每次请求都带密码，务必只在 HTTPS 下使用
+- token 通过请求头传递（不出现在 URL 里），但仍建议全程 HTTPS
 - 密码明文存配置（与 token 同风险模型），建议 `${ENV}` 注入，且 `config/` 已在 `.gitignore` 中
 - Docker 部署时用 `ports` 暴露端口，并限制来源 IP
 

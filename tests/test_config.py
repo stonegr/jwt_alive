@@ -119,16 +119,29 @@ sites:
 
 
 def test_parse_config_auth_dict() -> None:
+    """auth 表：key 是标识，value 是允许的 token 值。"""
     config = parse_config(
         {
-            'auth': {'alice': 'pwd1', 'bob': 'pwd2'},
+            'auth': {'alice': 'token-a', 'bob': 'token-b'},
             'sites': [_minimal_site()],
         }
     )
-    assert config.auth == {'alice': 'pwd1', 'bob': 'pwd2'}
-    assert config.verify_password('alice', 'pwd1')
-    assert not config.verify_password('alice', 'wrong')
-    assert not config.verify_password('nobody', 'pwd1')
+    assert config.auth == {'alice': 'token-a', 'bob': 'token-b'}
+    assert config.verify_token('token-a') == 'alice'
+    assert config.verify_token('token-b') == 'bob'
+    assert config.verify_token('wrong') is None
+    assert config.verify_token(None) is None
+    assert config.verify_token('') is None
+
+
+def test_verify_token_returns_first_match() -> None:
+    config = parse_config(
+        {
+            'auth': {'a': 'same', 'b': 'same'},
+            'sites': [_minimal_site()],
+        }
+    )
+    assert config.verify_token('same') == 'a'
 
 
 def test_parse_config_api_defaults() -> None:
@@ -202,4 +215,4 @@ sites:
     )
     config = load_config(config_file, environ={'API_USER': 'admin', 'API_PASSWORD': 'p@ss'})
     assert config.auth == {'admin': 'p@ss'}
-    assert config.verify_password('admin', 'p@ss')
+    assert config.verify_token('p@ss') == 'admin'
