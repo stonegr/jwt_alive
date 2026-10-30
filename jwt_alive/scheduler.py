@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime, timedelta
 import logging
 import os
+import time
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -18,24 +20,41 @@ from jwt_alive.service import JwtAliveService
 from jwt_alive.utils import now_utc
 
 
-def resolve_timezone(logger: logging.Logger | None = None) -> Any:
-    """解析本地时区：优先 TZ 环境变量，其次系统本地时区，最后回退 UTC。
+def resolve_timezone(logger: logging.Logger | None = None, name: str | None = None) -> Any:
+    """解析时区。
 
+    优先级：显式指定（配置） > TZ 环境变量 > 系统本地时区 > UTC。
     缺少 tzdata 时 tzlocal 会退化成 UTC 并打印警告，导致 cron 触发时间偏移，
     这里显式解析并给出清晰提示。
     """
-    name = os.environ.get('TZ')
     if name:
         try:
             return ZoneInfo(name)
         except Exception as exc:
             if logger is not None:
-                logger.warning('TZ=%s 无法加载时区（系统缺少 tzdata？），回退 UTC: %s', name, exc)
+                logger.warning('时区 %s 无法加载（系统缺少 tzdata？），回退 UTC: %s', name, exc)
+            return UTC
+    env_name = os.environ.get('TZ')
+    if env_name:
+        try:
+            return ZoneInfo(env_name)
+        except Exception as exc:
+            if logger is not None:
+                logger.warning('TZ=%s 无法加载时区（系统缺少 tzdata？），回退 UTC: %s', env_name, exc)
             return UTC
     try:
         return get_localzone()
     except Exception:
         return UTC
+
+
+def apply_process_timezone(name: str | None) -> None:
+    """把配置的时区应用到当前进程（影响日志与状态展示的本地时间）。"""
+    if not name:
+        return
+    os.environ['TZ'] = name
+    with contextlib.suppress(AttributeError):  # Windows 没有 tzset
+        time.tzset()
 
 
 class KeepAliveScheduler:
@@ -55,7 +74,7 @@ class KeepAliveScheduler:
         self.service = service
         self.interval_seconds = max(1, interval_seconds)
         self.log = logger or logging.getLogger(__name__)
-        self.timezone = resolve_timezone(self.log)
+        self.timezone = resolve_timezone(self.log, self.service.config.defaults.timezone)
         self.scheduler = BackgroundScheduler(timezone=self.timezone)
         self._last_scan: dict[str, datetime] = {}
 
@@ -75,7 +94,13 @@ class KeepAliveScheduler:
             if site.schedule.cron:
                 self.scheduler.add_job(
                     self._force_refresh,
-                    trigger=CronTrigger.from_crontab(site.schedule.cron, timezone=self.timezone),
+                    trigger=CronTrigger.from_crontab(
+                        site.schedule.cron,
+                        timezone=resolve_timezone(
+                            self.log,
+                            site.schedule.timezone or self.service.config.defaults.timezone,
+                        ),
+                    ),
                     args=[site.name],
                     id=f'cron-{site.name}',
                     replace_existing=True,

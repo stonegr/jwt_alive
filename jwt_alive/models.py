@@ -190,6 +190,9 @@ class ScheduleConfig(_Base):
     mode: RefreshMode = RefreshMode.ACCESS
     """刷新触发方式：access（默认）/ refresh / hybrid。"""
 
+    timezone: str | None = None
+    """站点级时区覆盖（cron 触发按此时区）；None 表示用 defaults.timezone。"""
+
     cron: str | None = None
     """可选的额外 cron 表达式，到点强制刷新。"""
 
@@ -250,6 +253,9 @@ class SiteConfig(_Base):
 
 class DefaultsConfig(_Base):
     """全局默认参数。"""
+
+    timezone: str | None = None
+    """全局时区（如 Asia/Shanghai）；None 表示用 TZ 环境变量/系统本地时区。"""
 
     scan_interval_seconds: int = 60
     refresh_before_seconds: int = 300

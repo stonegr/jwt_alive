@@ -4,6 +4,7 @@
 # 冒号写法在环境变量未定义时留空，方便先用模板跑通流程
 
 defaults:
+  timezone: "Asia/Shanghai"     # 全局时区（cron 触发按它来）；留空则用 TZ 环境变量/系统时区
   scan_interval_seconds: 60     # 全局扫描间隔（秒）
   refresh_before_seconds: 300   # 剩余寿命小于该值时触发刷新
   timeout_seconds: 15

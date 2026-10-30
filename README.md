@@ -100,6 +100,7 @@ api:                             # 对外 API 配置
   prefix: "/api"                 # 所有接口的前缀（"" 表示挂在根路径）
 
 defaults:
+  timezone: "Asia/Shanghai"     # 全局时区（cron 触发按它来）
   scan_interval_seconds: 60     # 全局扫描间隔
   refresh_before_seconds: 300   # 剩余寿命小于该值就刷新
   timeout_seconds: 15
@@ -298,6 +299,9 @@ schedule:
   （响应里 `refreshed: true`），刷新失败直接返回 `502` 并提示需重新登录
 - `mode=refresh` 下**不再调用登录态校验接口**（省流量）：会话是否还有效，
   由真正刷新那一次的成败来判断（失败会记 ERROR）
+- **cron 触发时区**：默认取 `defaults.timezone`（如 `Asia/Shanghai`），
+  站点可用 `schedule.timezone` 覆盖；都没配时依次回退 `TZ` 环境变量 → 系统本地时区 → UTC。
+  配置了时区后，日志与状态展示的本地时间也会跟着走
 - `refresh token` 的过期字段名可单独指定：`jwt.refresh_expiry_field`（默认沿用 `expiry_field`）；
   **解析不出来（非 JWT / 无过期字段）时自动退回按 access token 判断**，不会因此不刷新
 - 状态里会记录 refresh token 的到期时间（`status` 命令与 `/api/sites` 都有展示），

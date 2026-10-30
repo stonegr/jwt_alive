@@ -18,7 +18,7 @@ from jwt_alive.api_server import ApiServer
 from jwt_alive.config import ConfigError, load_config
 from jwt_alive.logging_setup import setup_logging
 from jwt_alive.models import AppConfig
-from jwt_alive.scheduler import KeepAliveScheduler
+from jwt_alive.scheduler import KeepAliveScheduler, apply_process_timezone
 from jwt_alive.service import JwtAliveService
 from jwt_alive.state import StateStore
 from jwt_alive.utils import now_utc, to_local
@@ -194,6 +194,8 @@ def _bootstrap(ctx: typer.Context) -> tuple[logging.Logger, AppConfig]:
     except ConfigError as exc:
         err_console.print(f'[red]配置错误：{exc}[/red]')
         raise typer.Exit(code=2) from exc
+    # 配置里的时区应用到进程（cron 触发与日志/状态展示的本地时间都按它来）
+    apply_process_timezone(config.defaults.timezone)
     return logger, config
 
 
