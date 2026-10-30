@@ -34,6 +34,7 @@ class ApiServer:
         host: str | None = None,
         port: int | None = None,
         prefix: str | None = None,
+        docs: bool | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self.log = logger or logging.getLogger(__name__)
@@ -42,6 +43,7 @@ class ApiServer:
         self.host = host or config.api.host
         self.port = port or config.api.port
         self.prefix = config.api.prefix if prefix is None else prefix
+        self.docs = config.api.docs if docs is None else docs
         self._server: Any = None
         self._thread: threading.Thread | None = None
 
@@ -63,7 +65,10 @@ class ApiServer:
             self.log.error('未安装 uvicorn，API 未启动: %s', exc)
             return False
 
-        app = create_app(self.service, self.config, prefix=self.prefix)
+        for issue in self.config.auth_issues():
+            self.log.warning('auth 配置有问题：%s', issue)
+
+        app = create_app(self.service, self.config, prefix=self.prefix, docs=self.docs)
         kwargs: dict[str, Any] = {
             'host': self.host,
             'port': self.port,

@@ -59,8 +59,16 @@ def authenticate(
     config: AppConfig = request.app.state.config
     identity = config.verify_token(token)
     if identity is None:
-        log.warning('API 认证失败：token 未命中 auth 表')
-        # 不区分"标识不存在"与"token 不匹配"，避免泄露有效 token 的存在性
+        # 不区分"标识不存在"与"token 不匹配"，避免泄露有效 token 的存在性；
+        # 但日志里说明是"没带头"还是"带了没匹配"，且绝不记录 token 本身
+        if token is None:
+            log.warning('API 认证失败：请求未携带 token（Authorization / X-Token / X-API-Key）')
+        else:
+            log.warning(
+                'API 认证失败：token 未命中 auth 表（长度 %d，auth 表 %d 条）',
+                len(token),
+                len(config.auth),
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='token 无效',
@@ -145,21 +153,34 @@ class MeOut(BaseModel):
 # --------------------------------------------------------------------------------------
 
 
-def create_app(service: JwtAliveService, config: AppConfig, prefix: str | None = None) -> FastAPI:
+def create_app(
+    service: JwtAliveService,
+    config: AppConfig,
+    prefix: str | None = None,
+    docs: bool | None = None,
+) -> FastAPI:
     """创建 FastAPI 应用。
 
     prefix 为 None 时取配置里的 api.prefix；所有路由（含 /docs、/openapi.json）都在该前缀下。
+    docs 为 None 时取配置里的 api.docs；False 时不注册文档路由（访问 404，业务接口不受影响）。
     """
     app_prefix = config.api.prefix if prefix is None else prefix
+    show_docs = config.api.docs if docs is None else docs
+
+    def _url(path: str) -> str | None:
+        if not show_docs:
+            return None
+        return f'{app_prefix}{path}' if app_prefix else path
+
     app = FastAPI(
         title='jwt-alive API',
         description='JWT 保活服务的对外接口：查询站点列表、获取 token、触发刷新。',
         version='0.1.0',
-        # 文档也放在前缀下，前缀外不留任何端点
-        docs_url=f'{app_prefix}/docs' if app_prefix else '/docs',
-        redoc_url=f'{app_prefix}/redoc' if app_prefix else '/redoc',
-        openapi_url=f'{app_prefix}/openapi.json' if app_prefix else '/openapi.json',
-        swagger_ui_oauth2_redirect_url=(f'{app_prefix}/docs/oauth2-redirect' if app_prefix else '/docs/oauth2-redirect'),
+        # 文档也放在前缀下，前缀外不留任何端点；关闭文档时这几个路由不注册
+        docs_url=_url('/docs'),
+        redoc_url=_url('/redoc'),
+        openapi_url=_url('/openapi.json'),
+        swagger_ui_oauth2_redirect_url=_url('/docs/oauth2-redirect'),
     )
     router = APIRouter(prefix=app_prefix)
     app.state.config = config

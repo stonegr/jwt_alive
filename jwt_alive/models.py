@@ -272,6 +272,9 @@ class ApiConfig(_Base):
     enabled: bool = True
     """是否启用 API（未配置 auth 时不会启动）。"""
 
+    docs: bool = True
+    """是否开放接口文档（/docs、/redoc、/openapi.json）；生产环境建议关闭。"""
+
     host: str = '127.0.0.1'
     """监听地址，容器内一般用 0.0.0.0。"""
 
@@ -333,14 +336,40 @@ class AppConfig(_Base):
 
         key 只是标识、不参与校验；所有条目都做一次常量时间比较，
         避免通过耗时/命中位置推断命中的是哪一个。
+
+        两边都会去掉首尾空白：YAML 块标量（|）写出来的值带尾部换行，
+        不 strip 会导致永远匹配不上。
         """
         if not token:
             return None
+        candidate = token.strip()
+        if not candidate:
+            return None
         matched: str | None = None
         for name, expected in self.auth.items():
-            if hmac.compare_digest(token, expected) and matched is None:
+            value = expected.strip()
+            if not value:
+                continue
+            if hmac.compare_digest(candidate, value) and matched is None:
                 matched = name
         return matched
+
+    def auth_issues(self) -> list[str]:
+        """检查 auth 表里的问题（空值/重复值），用于启动时提示。"""
+        issues: list[str] = []
+        empty = [name for name, value in self.auth.items() if not value.strip()]
+        if empty:
+            issues.append('auth 表里这些条目的 token 为空（环境变量没设置？）：' + ', '.join(sorted(empty)))
+        seen: dict[str, str] = {}
+        for name, value in self.auth.items():
+            token = value.strip()
+            if not token:
+                continue
+            if token in seen:
+                issues.append(f'auth 表里 "{seen[token]}" 与 "{name}" 的 token 相同')
+            else:
+                seen[token] = name
+        return issues
 
 
 # --------------------------------------------------------------------------------------

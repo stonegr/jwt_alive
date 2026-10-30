@@ -154,7 +154,11 @@ class SiteRuntime:
         self._sync_refresh_expiry(self.state)
 
     def remaining_seconds(self, now: datetime | None = None) -> float | None:
-        info = self.expiry_info()
+        try:
+            info = self.expiry_info()
+        except JwtDecodeError:
+            # token 不是 JWT（不透明 token / 占位值）→ 没有到期时间概念
+            return None
         if info.expires_at is None:
             return None
         reference = now or now_utc()

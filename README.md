@@ -94,7 +94,8 @@ auth:                            # 对外 API 的 token 表：标识 -> 允许�
   ${API_ID:-default}: "${API_TOKEN:-}"
 
 api:                             # 对外 API 配置
-  enabled: true
+  enabled: true                  # 是否启动 API（还要配了 auth 才会启动）
+  docs: true                     # 是否开放接口文档（/docs、/redoc、/openapi.json），生产建议关
   host: "127.0.0.1"              # 容器内用 0.0.0.0
   port: 8080
   prefix: "/api"                 # 所有接口的前缀（"" 表示挂在根路径）
@@ -216,6 +217,18 @@ curl -H "X-Token: $API_TOKEN"          http://127.0.0.1:8080/api/sites
 
 > `auth` 为空则 API 不启动（保活不受影响）。
 
+### 接口文档开关
+
+`api.docs: false` → `/docs`、`/redoc`、`/openapi.json` 全部不注册（访问 404），
+**业务接口不受影响**。生产环境对外暴露时建议关掉。
+
+```bash
+jwt-alive --no-api-docs run            # 命令行覆盖
+JWT_ALIVE_API_DOCS=false jwt-alive run  # 环境变量覆盖
+```
+
+优先级：命令行 > 环境变量 > 配置。
+
 ### 路径前缀
 
 所有接口都在 `api.prefix` 前缀下（默认 `/api`），交互式文档同理：
@@ -272,6 +285,9 @@ curl -u alice:s3cret -X POST http://127.0.0.1:8080/api/sites/clockify/refresh
 
 - API 会返回 **token 明文**，默认只监听 `127.0.0.1`；容器内需监听 `0.0.0.0` 时**务必**前置 HTTPS 反代（或用 `api.ssl_certfile` / `api.ssl_keyfile` 自签）
 - token 通过请求头传递（不出现在 URL 里），但仍建议全程 HTTPS
+- **认证排查**：① YAML 块标量 `|` 写出的 token 带尾部换行（框架已自动 strip）；
+  ② 反向代理要保留头：`proxy_set_header Authorization $http_authorization;`；
+  ③ 浏览器/前端调用需要 CORS（预检会被拦）；④ 失败日志会说明"没带 token"还是"带了没匹配"
 - 密码明文存配置（与 token 同风险模型），建议 `${ENV}` 注入，且 `config/` 已在 `.gitignore` 中
 - Docker 部署时用 `ports` 暴露端口，并限制来源 IP
 
