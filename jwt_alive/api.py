@@ -10,7 +10,7 @@ from datetime import datetime
 import logging
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
@@ -121,21 +121,31 @@ class MeOut(BaseModel):
 # --------------------------------------------------------------------------------------
 
 
-def create_app(service: JwtAliveService, config: AppConfig) -> FastAPI:
-    """创建 FastAPI 应用。"""
+def create_app(service: JwtAliveService, config: AppConfig, prefix: str | None = None) -> FastAPI:
+    """创建 FastAPI 应用。
+
+    prefix 为 None 时取配置里的 api.prefix；所有路由（含 /docs、/openapi.json）都在该前缀下。
+    """
+    app_prefix = config.api.prefix if prefix is None else prefix
     app = FastAPI(
         title='jwt-alive API',
         description='JWT 保活服务的对外接口：查询站点列表、获取 token、触发刷新。',
         version='0.1.0',
+        # 文档也放在前缀下，前缀外不留任何端点
+        docs_url=f'{app_prefix}/docs' if app_prefix else '/docs',
+        redoc_url=f'{app_prefix}/redoc' if app_prefix else '/redoc',
+        openapi_url=f'{app_prefix}/openapi.json' if app_prefix else '/openapi.json',
+        swagger_ui_oauth2_redirect_url=(f'{app_prefix}/docs/oauth2-redirect' if app_prefix else '/docs/oauth2-redirect'),
     )
+    router = APIRouter(prefix=app_prefix)
     app.state.config = config
     app.state.service = service
 
-    @app.get('/api/me', response_model=MeOut, summary='当前认证用户')
+    @router.get('/me', response_model=MeOut, summary='当前认证用户')
     def me(username: CurrentUser) -> MeOut:
         return MeOut(username=username)
 
-    @app.get('/api/health', response_model=HealthOut, summary='健康状态')
+    @router.get('/health', response_model=HealthOut, summary='健康状态')
     def health(username: CurrentUser) -> HealthOut:
         statuses = service.status_all()
         last_scan = service.store.last_scan
@@ -149,11 +159,11 @@ def create_app(service: JwtAliveService, config: AppConfig) -> FastAPI:
             sites=[_site_out(s) for s in statuses],
         )
 
-    @app.get('/api/sites', response_model=list[SiteOut], summary='站点列表')
+    @router.get('/sites', response_model=list[SiteOut], summary='站点列表')
     def list_sites(username: CurrentUser) -> list[SiteOut]:
         return [_site_out(s) for s in service.status_all()]
 
-    @app.get('/api/sites/{name}', response_model=SiteDetailOut, summary='站点详情（含 token）')
+    @router.get('/sites/{name}', response_model=SiteDetailOut, summary='站点详情（含 token）')
     def get_site(name: str, username: CurrentUser) -> SiteDetailOut:
         runtime = service.get_runtime(name)
         if runtime is None:
@@ -165,7 +175,7 @@ def create_app(service: JwtAliveService, config: AppConfig) -> FastAPI:
             refresh_token=runtime.state.refresh_token,
         )
 
-    @app.get('/api/sites/{name}/token', response_model=TokenOut, summary='获取站点 token')
+    @router.get('/sites/{name}/token', response_model=TokenOut, summary='获取站点 token')
     def get_token(name: str, username: CurrentUser) -> TokenOut:
         runtime = service.get_runtime(name)
         if runtime is None:
@@ -177,7 +187,7 @@ def create_app(service: JwtAliveService, config: AppConfig) -> FastAPI:
             expiry_field=runtime.state.expiry_field,
         )
 
-    @app.post('/api/sites/{name}/refresh', response_model=RefreshOut, summary='触发站点刷新')
+    @router.post('/sites/{name}/refresh', response_model=RefreshOut, summary='触发站点刷新')
     def refresh_site(name: str, username: CurrentUser) -> RefreshOut:
         runtime = service.get_runtime(name)
         if runtime is None:
@@ -192,7 +202,7 @@ def create_app(service: JwtAliveService, config: AppConfig) -> FastAPI:
             written_back=outcome.written_back,
         )
 
-    @app.post('/api/refresh-all', response_model=list[RefreshOut], summary='刷新全部站点')
+    @router.post('/refresh-all', response_model=list[RefreshOut], summary='刷新全部站点')
     def refresh_all(username: CurrentUser) -> list[RefreshOut]:
         return [
             RefreshOut(
@@ -206,6 +216,7 @@ def create_app(service: JwtAliveService, config: AppConfig) -> FastAPI:
             for o in service.refresh_all(force=True)
         ]
 
+    app.include_router(router)
     return app
 
 

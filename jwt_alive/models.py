@@ -256,12 +256,25 @@ class ApiConfig(_Base):
     ssl_keyfile: str | None = None
     """HTTPS 私钥路径（可选）。"""
 
+    prefix: str = '/api'
+    """所有 API 路径的前缀（'' 表示直接挂在根路径）。"""
+
     @field_validator('port')
     @classmethod
     def _valid_port(cls, v: int) -> int:
         if not 1 <= v <= 65535:
             raise ValueError('api.port 必须在 1-65535 之间')
         return v
+
+    @field_validator('prefix')
+    @classmethod
+    def _valid_prefix(cls, v: str) -> str:
+        p = v.strip()
+        if not p or p == '/':
+            return ''
+        if not p.startswith('/'):
+            p = '/' + p
+        return p.rstrip('/')
 
 
 class AppConfig(_Base):

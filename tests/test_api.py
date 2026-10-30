@@ -35,15 +35,21 @@ def _site(token: str) -> dict[str, Any]:
     }
 
 
-def _client(tmp_path: Path, auth: dict[str, str] | None = None) -> TestClient:
+def _client(
+    tmp_path: Path,
+    auth: dict[str, str] | None = None,
+    api: dict[str, Any] | None = None,
+    prefix: str | None = None,
+) -> TestClient:
     config = parse_config(
         {
             'auth': auth if auth is not None else {USER: PASSWORD},
+            'api': api or {},
             'sites': [_site(make_token())],
         }
     )
     service = JwtAliveService(config=config, state_path=tmp_path / 'state.json')
-    app = create_app(service, config)
+    app = create_app(service, config, prefix=prefix)
     return TestClient(app)
 
 
@@ -180,8 +186,48 @@ def test_refresh_failure_reports_business_error(httpx_mock: Any, tmp_path: Path)
 
 def test_openapi_docs_available(tmp_path: Path) -> None:
     client = _client(tmp_path)
-    resp = client.get('/openapi.json')
+    resp = client.get('/api/openapi.json')
     assert resp.status_code == 200
     paths = resp.json()['paths']
     assert '/api/sites' in paths
     assert '/api/sites/{name}/refresh' in paths
+    # 文档也放在前缀下
+    assert client.get('/api/docs').status_code == 200
+
+
+# -- 路径前缀 ----------------------------------------------------------------------------
+
+
+def test_default_prefix_is_api(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    assert client.get('/api/sites', headers=_auth_header()).status_code == 200
+    assert client.get('/sites', headers=_auth_header()).status_code == 404
+
+
+def test_custom_prefix_from_config(tmp_path: Path) -> None:
+    client = _client(tmp_path, api={'prefix': '/jwt'})
+    assert client.get('/jwt/sites', headers=_auth_header()).status_code == 200
+    assert client.get('/api/sites', headers=_auth_header()).status_code == 404
+    assert client.get('/jwt/sites/demo/token', headers=_auth_header()).status_code == 200
+
+
+def test_empty_prefix_mounts_on_root(tmp_path: Path) -> None:
+    client = _client(tmp_path, api={'prefix': ''})
+    assert client.get('/sites', headers=_auth_header()).status_code == 200
+    assert client.get('/api/sites', headers=_auth_header()).status_code == 404
+
+
+def test_prefix_argument_overrides_config(tmp_path: Path) -> None:
+    client = _client(tmp_path, api={'prefix': '/api'}, prefix='/v1')
+    assert client.get('/v1/sites', headers=_auth_header()).status_code == 200
+    assert client.get('/api/sites', headers=_auth_header()).status_code == 404
+
+
+def test_openapi_paths_use_custom_prefix(tmp_path: Path) -> None:
+    client = _client(tmp_path, api={'prefix': '/jwt'})
+    resp = client.get('/jwt/openapi.json')
+    assert resp.status_code == 200
+    paths = resp.json()['paths']
+    assert '/jwt/sites' in paths
+    assert '/jwt/refresh-all' in paths
+    assert '/api/sites' not in paths

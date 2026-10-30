@@ -125,7 +125,7 @@ PY_FILE?=./jwt_alive/cli.py
 BUILD_DIR?=dist
 # 默认使用的 bullseye 只支持4种架构
 PYTHON_VERSION ?= '3.12'
-DEBIAN_VERSION ?= 'trixie'
+DEBIAN_VERSION ?= 'bullseye'
 ALPINE_VERSION ?= '3.24'
 IMAGE_PREFIX := $(shell basename $$(pwd))
 ARCH_NAME = $(shell echo $(ARCH) | tr '/' '-')
@@ -245,7 +245,7 @@ build-image: docker-buildx-check ## ARCH=amd64 [FORCE=1] [CN=1] 构建预安装�
 	@echo "FROM python:$(PYTHON_VERSION)-slim-$(DEBIAN_VERSION)\n \
 	WORKDIR /app\n \
 	$(shell [ -f requirements.txt ] && echo 'COPY requirements.txt .' || true)\n \
-	RUN $(if $(filter 1,$(CN)),find /etc/apt/ -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i -e 's@deb.debian.org@mirrors.tuna.tsinghua.edu.cn@g' -e 's@security.debian.org@mirrors.tuna.tsinghua.edu.cn@g' {} + &&) \
+	RUN $(if $(filter 1,$(CN)),find /etc/apt/ -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i -e 's@deb.debian.org@archive.debian.org@g' -e 's@security.debian.org@archive.debian.org@g' {} + &&) \
 	apt-get update -y && apt-get install -y gcc g++ make libc6-dev python3-dev tzdata && apt-get clean && rm -rf /var/lib/apt/lists/*\n \
 	RUN pip install pyinstaller --break-system-packages $(shell [ -f requirements.txt ] && echo '-r requirements.txt' || true) $(shell [ $(CN) = '1' ] && echo '-i https://pypi.tuna.tsinghua.edu.cn/simple' || true)" \
 	| docker buildx build -t $(IMAGE_PREFIX)-$(ARCH_NAME) \

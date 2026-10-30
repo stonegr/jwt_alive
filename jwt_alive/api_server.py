@@ -33,6 +33,7 @@ class ApiServer:
         config: AppConfig,
         host: str | None = None,
         port: int | None = None,
+        prefix: str | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self.log = logger or logging.getLogger(__name__)
@@ -40,6 +41,7 @@ class ApiServer:
         self.config = config
         self.host = host or config.api.host
         self.port = port or config.api.port
+        self.prefix = config.api.prefix if prefix is None else prefix
         self._server: Any = None
         self._thread: threading.Thread | None = None
 
@@ -61,7 +63,7 @@ class ApiServer:
             self.log.error('未安装 uvicorn，API 未启动: %s', exc)
             return False
 
-        app = create_app(self.service, self.config)
+        app = create_app(self.service, self.config, prefix=self.prefix)
         kwargs: dict[str, Any] = {
             'host': self.host,
             'port': self.port,
@@ -75,7 +77,13 @@ class ApiServer:
         self._server = uvicorn.Server(uvicorn.Config(app, **kwargs))
         self._thread = threading.Thread(target=self._server.run, name='jwt-alive-api', daemon=True)
         self._thread.start()
-        self.log.info('API 已启动: http://%s:%s（文档 /docs）', self.host, self.port)
+        self.log.info(
+            'API 已启动: http://%s:%s%s（文档 %s/docs）',
+            self.host,
+            self.port,
+            self.prefix,
+            self.prefix,
+        )
         return True
 
     def stop(self) -> None:

@@ -97,6 +97,7 @@ api:                             # 对外 API 配置
   enabled: true
   host: "127.0.0.1"              # 容器内用 0.0.0.0
   port: 8080
+  prefix: "/api"                 # 所有接口的前缀（"" 表示挂在根路径）
 
 defaults:
   scan_interval_seconds: 60     # 全局扫描间隔
@@ -193,7 +194,27 @@ curl -u alice:s3cret http://127.0.0.1:8080/api/sites
 
 未认证或密码错误 → `401` + `WWW-Authenticate: Basic realm="jwt-alive"`。
 
+### 路径前缀
+
+所有接口都在 `api.prefix` 前缀下（默认 `/api`），交互式文档同理：
+
+```yaml
+api:
+  prefix: "/api"      # → /api/sites、/api/sites/{name}/token …
+```
+
+| 配置 | 实际路径 |
+| --- | --- |
+| `prefix: "/api"` | `/api/sites` |
+| `prefix: "/jwt"` | `/jwt/sites` |
+| `prefix: ""` | `/sites`（挂在根路径） |
+
+命令行 `--api-prefix`、环境变量 `JWT_ALIVE_API_PREFIX` 可覆盖配置（优先级：命令行 > 环境变量 > 配置）。
+前缀会做归一化：`api` → `/api`，`/v1/api/` → `/v1/api`，`/` → 无前缀。
+
 ### 端点
+
+（下列路径以默认前缀 `/api` 为例）
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |

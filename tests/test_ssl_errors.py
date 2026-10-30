@@ -33,6 +33,31 @@ def test_describe_error_ssl() -> None:
     assert 'SSLError' in detail
 
 
+def test_describe_error_finds_inner_ssl_error() -> None:
+    """真实异常链：httpx.ConnectError → httpcore.ConnectError → ssl.SSLError。
+
+    SSLError 在最内层的 __context__ 里，只看一层会误判成"连接失败"。
+    """
+    ssl_error = ssl.SSLError('[SSL] unknown error (_ssl.c:1011)')
+    inner = httpx.ConnectError('[SSL] unknown error (_ssl.c:1011)')
+    inner.__context__ = ssl_error
+    outer = httpx.ConnectError('[SSL] unknown error (_ssl.c:1011)]')
+    outer.__cause__ = inner
+
+    detail = describe_error(outer)
+    assert 'SSL 错误' in detail
+    assert '原因: SSLError' in detail
+    assert '连接失败' not in detail
+
+
+def test_describe_error_no_self_reference() -> None:
+    exc = httpx.ConnectError('boom')
+    exc.__cause__ = exc
+    detail = describe_error(exc)
+    assert '原因' not in detail
+    assert '连接失败' in detail
+
+
 def test_describe_error_timeout() -> None:
     detail = describe_error(httpx.ReadTimeout('too slow'))
     assert '超时' in detail

@@ -53,6 +53,7 @@ ENV_PLUGINS = 'JWT_ALIVE_PLUGINS'
 ENV_LOG_LEVEL = 'JWT_ALIVE_LOG_LEVEL'
 ENV_API_HOST = 'JWT_ALIVE_API_HOST'
 ENV_API_PORT = 'JWT_ALIVE_API_PORT'
+ENV_API_PREFIX = 'JWT_ALIVE_API_PREFIX'
 ENV_DATA_DIR = 'JWT_ALIVE_DATA_DIR'
 
 
@@ -136,6 +137,12 @@ def _api_host(value: str | None) -> str | None:
     if value is not None:
         return value
     return os.environ.get(ENV_API_HOST) or None
+
+
+def _api_prefix(value: str | None) -> str | None:
+    if value is not None:
+        return value
+    return os.environ.get(ENV_API_PREFIX) or None
 
 
 def _api_port(value: int | None) -> int | None:
@@ -244,6 +251,7 @@ def run(
     ctx: typer.Context,
     api_host: Annotated[str | None, typer.Option('--api-host', help='API 监听地址，覆盖配置')] = None,
     api_port: Annotated[int | None, typer.Option('--api-port', help='API 监听端口，覆盖配置')] = None,
+    api_prefix: Annotated[str | None, typer.Option('--api-prefix', help='API 路径前缀，覆盖配置')] = None,
     no_api: Annotated[bool, typer.Option('--no-api', help='不启动对外 API')] = False,
 ) -> None:
     """启动保活守护进程（前台运行，Ctrl-C 退出）。"""
@@ -257,6 +265,7 @@ def run(
             config,
             host=_api_host(api_host),
             port=_api_port(api_port),
+            prefix=_api_prefix(api_prefix),
             logger=logger,
         )
     console.print(f'[bold green]jwt-alive[/bold green] 已启动，站点 {len(service.runtimes)} 个')

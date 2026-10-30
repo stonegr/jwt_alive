@@ -24,6 +24,7 @@ api:
   enabled: true
   host: "0.0.0.0"     # 仅本机访问可改成 127.0.0.1；容器内必须 0.0.0.0
   port: 8080
+  prefix: "/api"      # 所有接口的前缀（改成 "/jwt" 即 /jwt/sites …；留空则挂在根路径）
   # ssl_certfile: "/app/certs/cert.pem"    # 可选：自签 HTTPS（建议走反向代理）
   # ssl_keyfile: "/app/certs/key.pem"
 

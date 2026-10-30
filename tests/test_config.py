@@ -150,6 +150,25 @@ def test_parse_config_api_section() -> None:
     assert config.api.port == 9000
 
 
+def test_parse_config_api_prefix_normalized() -> None:
+    config = parse_config({'api': {'prefix': 'jwt'}, 'sites': [_minimal_site()]})
+    assert config.api.prefix == '/jwt'
+
+    config2 = parse_config({'api': {'prefix': '/v1/api/'}, 'sites': [_minimal_site()]})
+    assert config2.api.prefix == '/v1/api'
+
+    config3 = parse_config({'api': {'prefix': '/'}, 'sites': [_minimal_site()]})
+    assert config3.api.prefix == ''
+
+    config4 = parse_config({'api': {'prefix': ''}, 'sites': [_minimal_site()]})
+    assert config4.api.prefix == ''
+
+
+def test_parse_config_api_prefix_default() -> None:
+    config = parse_config({'sites': [_minimal_site()]})
+    assert config.api.prefix == '/api'
+
+
 def test_parse_config_rejects_invalid_api_port() -> None:
     with pytest.raises(ConfigError):
         parse_config({'api': {'port': 99999}, 'sites': [_minimal_site()]})
