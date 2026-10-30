@@ -209,6 +209,9 @@ class SiteConfig(_Base):
     proxy: str | None = None
     """显式代理地址，如 http://127.0.0.1:1080。"""
 
+    prefer_ipv4: bool = False
+    """强制走 IPv4（NAS 上 IPv6 半通导致 TLS 握手失败时用）。"""
+
     retry_attempts: int = 3
     """刷新请求失败时的重试次数。"""
 

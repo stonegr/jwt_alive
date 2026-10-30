@@ -68,6 +68,7 @@ sites:
     retry_backoff_seconds: 1.0
     trust_env: true          # 是否使用系统代理环境变量
     proxy: null              # 显式代理，如 http://127.0.0.1:1080
+    prefer_ipv4: false       # 强制 IPv4（NAS 上 IPv6 半通导致 TLS 握手失败时开）
 
   # 示例二：过期时间放在自定义字段（毫秒时间戳），刷新接口用 GET 并从 Set-Cookie 取 token
   - name: example-cookie

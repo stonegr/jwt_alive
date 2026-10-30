@@ -120,6 +120,12 @@ sites:
       method: "POST"
       headers:
         Authorization: "Bearer {access_token}"     # 支持占位符
+    # 网络相关（可选）
+    retry_attempts: 3          # 失败重试次数
+    retry_backoff_seconds: 1.0 # 重试退避基数
+    trust_env: true            # 读取系统代理环境变量
+    proxy: null                # 显式代理
+    prefer_ipv4: false         # 强制 IPv4（NAS IPv6 半通时开）
       body:
         refresh_token: "{refresh_token}"
       token_source: "body"      # body | cookie
@@ -372,6 +378,23 @@ echo "GID=$(id -g)" >> .env
 make docker-health                       # 查看健康状态
 docker compose exec jwt-alive jwt-alive health --max-age 300
 ```
+
+### SSL / 网络错误排查
+
+日志里出现 `[SSL] unknown error (_ssl.c:1011)`、`ConnectError`、`ReadTimeout` 等，属于
+**TLS 握手/网络层**的瞬时失败（不是业务错误）。程序会自动重试
+（`retry_attempts`，默认 3 次），重试成功只记 INFO，不影响保活。
+
+按可能性排查：
+
+1. **IPv6 半通**（NAS 最常见）：TCP 走 v6 连上了，但 TLS 握手数据被丢弃 →
+   握手中途失败（`socket.create_connection` 只在 connect 失败时才回退地址）。
+   → 站点配置加 `prefer_ipv4: true` 强制走 IPv4，或在 NAS 上关掉 IPv6
+2. **代理环境变量**：本项目 `trust_env: true` 默认读取 `HTTP_PROXY`/`ALL_PROXY`，
+   代理不稳也会造成握手失败 → `env | grep -i proxy` 确认，或显式配 `proxy:`
+3. **系统时间**：时间不对一般是证书校验失败 → `date` + NTP
+4. **CA 证书链**：Alpine 需 `apk add ca-certificates`，Debian 需 `apt install ca-certificates`
+5. **OpenSSL 版本**：过老的 OpenSSL 与服务端协商失败（会持续失败而非偶发）
 
 ### 常见问题
 

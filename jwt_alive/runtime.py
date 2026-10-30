@@ -15,7 +15,7 @@ from jwt_alive.adapters.base import SiteAdapter
 from jwt_alive.jwt_tools import JwtDecodeError, decode_payload
 from jwt_alive.models import CheckResult, ExpiryInfo, SiteConfig, SiteState
 from jwt_alive.persist import write_back_tokens_safe
-from jwt_alive.utils import mask_token, now_utc, truncate
+from jwt_alive.utils import describe_error, mask_token, now_utc, truncate
 
 
 class RefreshError(Exception):
@@ -255,26 +255,45 @@ class SiteRuntime:
                 )
             except httpx.HTTPError as exc:
                 last_error = exc
-                self.log.warning(
-                    '站点 %s 刷新请求异常（第 %d/%d 次）: %s',
-                    self.name,
-                    attempt,
-                    attempts,
-                    exc,
-                )
+                detail = describe_error(exc)
+                if attempt < attempts:
+                    self.log.info(
+                        '站点 %s 刷新请求异常（第 %d/%d 次）: %s，重试中',
+                        self.name,
+                        attempt,
+                        attempts,
+                        detail,
+                    )
+                else:
+                    self.log.warning(
+                        '站点 %s 刷新请求异常（第 %d/%d 次）: %s',
+                        self.name,
+                        attempt,
+                        attempts,
+                        detail,
+                    )
             else:
                 if response.status_code < 500:
                     if response.status_code >= 400:
                         raise RefreshError(f'刷新接口返回 HTTP {response.status_code}: {truncate(response.text, 200)}')
                     return response
                 last_error = RefreshError(f'刷新接口返回 HTTP {response.status_code}')
-                self.log.warning(
-                    '站点 %s 刷新接口返回 %d（第 %d/%d 次）',
-                    self.name,
-                    response.status_code,
-                    attempt,
-                    attempts,
-                )
+                if attempt < attempts:
+                    self.log.info(
+                        '站点 %s 刷新接口返回 %d（第 %d/%d 次），重试中',
+                        self.name,
+                        response.status_code,
+                        attempt,
+                        attempts,
+                    )
+                else:
+                    self.log.warning(
+                        '站点 %s 刷新接口返回 %d（第 %d/%d 次）',
+                        self.name,
+                        response.status_code,
+                        attempt,
+                        attempts,
+                    )
             if attempt < attempts and backoff > 0:
                 _sleep(backoff * attempt)
         raise RefreshError(f'刷新失败: {last_error}')

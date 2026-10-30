@@ -19,6 +19,7 @@ from jwt_alive.models import (
     TokenBundle,
     TokenSource,
 )
+from jwt_alive.utils import describe_error
 
 
 class HttpSiteAdapter(SiteAdapter):
@@ -113,22 +114,32 @@ class HttpSiteAdapter(SiteAdapter):
                     timeout=request.timeout,
                 )
             except httpx.HTTPError as exc:
-                # 常见于服务端回收了空闲 keep-alive 连接，重试一次即可
+                # 瞬时错误（SSL/连接抖动）重试即可；全部失败才算"无法判断"
                 last_error = exc
-                self.log.warning(
-                    '站点 %s 登录态校验请求异常（第 %d/%d 次）: %s',
-                    self.site.name,
-                    attempt,
-                    attempts,
-                    exc,
-                )
+                detail = describe_error(exc)
                 if attempt < attempts:
-                    time.sleep(0.5 * attempt)
-                continue
+                    self.log.info(
+                        '站点 %s 登录态校验请求异常（第 %d/%d 次）: %s，重试中',
+                        self.site.name,
+                        attempt,
+                        attempts,
+                        detail,
+                    )
+                    time.sleep(min(0.5, self.site.retry_backoff_seconds) * attempt)
+                    continue
+                self.log.warning(
+                    '站点 %s 登录态校验请求失败（%d 次尝试后）: %s',
+                    self.site.name,
+                    attempts,
+                    detail,
+                )
+                return CheckResult(None, '登录态校验请求失败', detail)
+            if attempt > 1:
+                self.log.info('站点 %s 登录态校验重试后成功（第 %d 次）', self.site.name, attempt)
             return self._evaluate(cfg, response)
 
         # 网络异常：无法判断登录态（不当作"未登录"，避免白白消耗 refresh_token）
-        return CheckResult(None, '登录态校验请求失败', str(last_error))
+        return CheckResult(None, '登录态校验请求失败', describe_error(last_error) if last_error else None)
 
     def _build_check_request(self, cfg: LoginCheckConfig, state: SiteState) -> RequestSpec:
         context = self.template_context(state)
