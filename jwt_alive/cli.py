@@ -375,7 +375,7 @@ def status(ctx: typer.Context) -> None:
         return
 
     table = Table(title='jwt-alive 状态', show_lines=False)
-    for col in ('站点', '登录态', '到期时间', '剩余', '最后刷新', '最后错误'):
+    for col in ('站点', '登录态', '到期时间', '剩余', 'refresh 到期', '最后刷新', '最后错误'):
         table.add_column(col)
     for state in states.values():
         remaining = None
@@ -387,11 +387,15 @@ def status(ctx: typer.Context) -> None:
             logged = '[green]是[/green]'
         else:
             logged = '[red]否[/red]'
+        refresh_remaining = None
+        if state.refresh_expires_at is not None:
+            refresh_remaining = (state.refresh_expires_at - now_utc()).total_seconds()
         table.add_row(
             state.name,
             logged,
             _fmt_time(state.expires_at),
             _fmt_remaining(remaining),
+            _fmt_remaining(refresh_remaining),
             _fmt_time(state.last_refresh),
             (state.last_error or '-')[:60],
         )

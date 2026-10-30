@@ -28,7 +28,7 @@ try:  # pragma: no cover - Windows 没有 fcntl
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
-TOKEN_FIELDS = ('access_token', 'refresh_token', 'expires_at', 'expiry_field')
+TOKEN_FIELDS = ('access_token', 'refresh_token', 'expires_at', 'expiry_field', 'refresh_expires_at')
 META_FIELDS = ('logged_in', 'last_check', 'last_refresh', 'last_error', 'consecutive_failures', 'history')
 
 

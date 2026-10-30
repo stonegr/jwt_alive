@@ -12,10 +12,20 @@ from typing import Any
 import httpx
 
 from jwt_alive.adapters.base import SiteAdapter
-from jwt_alive.jwt_tools import JwtDecodeError, decode_payload
-from jwt_alive.models import CheckResult, ExpiryInfo, SiteConfig, SiteState
+from jwt_alive.jwt_tools import JwtDecodeError, decode_payload, resolve_expiry
+from jwt_alive.models import (
+    CheckKind,
+    CheckResult,
+    ExpiryInfo,
+    RefreshMode,
+    SiteConfig,
+    SiteState,
+)
 from jwt_alive.persist import write_back_tokens_safe
 from jwt_alive.utils import describe_error, mask_token, now_utc, truncate
+
+
+DEFAULT_REFRESH_TOKEN_BEFORE_SECONDS = 86400
 
 
 class RefreshError(Exception):
@@ -45,6 +55,8 @@ class SiteStatus:
     expires_at: datetime | None = None
     remaining_seconds: float | None = None
     expiry_field: str | None = None
+    refresh_expires_at: datetime | None = None
+    refresh_remaining_seconds: float | None = None
     last_check: datetime | None = None
     last_refresh: datetime | None = None
     last_error: str | None = None
@@ -81,20 +93,61 @@ class SiteRuntime:
         return value if value is not None else 300
 
     def expiry_info(self) -> ExpiryInfo:
-        """解析当前 token 的过期时间。"""
+        """解析当前 access token 的过期时间。"""
         return self.adapter.resolve_expiry(self.state.access_token)
 
-    def ensure_expiry(self) -> None:
-        """首次使用时补齐状态里的到期时间（配置里的初始 token 也要算）。"""
-        if self.state.expires_at is not None or not self.state.access_token:
-            return
+    def refresh_expiry_info(self) -> ExpiryInfo:
+        """解析 refresh token 的过期时间（字段名可单独配置）。
+
+        解析不出来（非 JWT / 无过期字段）时返回空结果，由调用方退回按 access token 判断。
+        """
+        token = self.state.refresh_token
+        if not token:
+            return ExpiryInfo(expires_at=None)
+        field = self.site.jwt.refresh_expiry_field
         try:
-            info = self.adapter.resolve_expiry(self.state.access_token)
-        except JwtDecodeError as exc:
-            self.log.debug('站点 %s 的初始 token 无法解析: %s', self.name, exc)
-            return
-        self.state.expires_at = info.expires_at
-        self.state.expiry_field = info.field
+            if not field:
+                return self.adapter.resolve_expiry(token)
+            payload = decode_payload(token)
+        except JwtDecodeError:
+            return ExpiryInfo(expires_at=None)
+        return resolve_expiry(payload, self.site.jwt.model_copy(update={'expiry_field': field}))
+
+    def refresh_token_remaining(self, now: datetime | None = None) -> float | None:
+        """refresh token 的剩余寿命（秒），解析不出来返回 None。"""
+        info = self.refresh_expiry_info()
+        if info.expires_at is None:
+            return None
+        reference = now or now_utc()
+        return (info.expires_at - reference).total_seconds()
+
+    def access_token_expired(self, now: datetime | None = None) -> bool:
+        """access token 是否已过期（含 leeway 容忍）。"""
+        try:
+            info = self.expiry_info()
+        except JwtDecodeError:
+            return True
+        if info.expires_at is None:
+            return False
+        reference = now or now_utc()
+        remaining = (info.expires_at - reference).total_seconds() + self.site.jwt.leeway_seconds
+        return remaining <= 0
+
+    def ensure_expiry(self) -> None:
+        """补齐状态里的到期时间（配置里的初始 token 也要算）。
+
+        access 与 refresh 两个 token 的到期时间都会补齐，
+        方便按 refresh token 触发刷新（mode=refresh）。
+        """
+        if self.state.expires_at is None and self.state.access_token:
+            try:
+                info = self.adapter.resolve_expiry(self.state.access_token)
+            except JwtDecodeError as exc:
+                self.log.debug('站点 %s 的初始 token 无法解析: %s', self.name, exc)
+            else:
+                self.state.expires_at = info.expires_at
+                self.state.expiry_field = info.field
+        self._sync_refresh_expiry(self.state)
 
     def remaining_seconds(self, now: datetime | None = None) -> float | None:
         info = self.expiry_info()
@@ -103,9 +156,18 @@ class SiteRuntime:
         reference = now or now_utc()
         return (info.expires_at - reference).total_seconds()
 
-    def needs_refresh(self, now: datetime | None = None) -> bool:
-        """是否到了需要刷新的时间点。"""
+    def needs_refresh(self, now: datetime | None = None, mode: RefreshMode | None = None) -> bool:
+        """是否到了需要刷新的时间点（按 schedule.mode 判定）。"""
         reference = now or now_utc()
+        effective = mode or self.site.schedule.mode
+        if effective == RefreshMode.REFRESH:
+            return self._refresh_token_near_expiry(reference)
+        access_due = self._access_near_expiry(reference)
+        if effective == RefreshMode.HYBRID:
+            return access_due or self._refresh_token_near_expiry(reference)
+        return access_due
+
+    def _access_near_expiry(self, reference: datetime) -> bool:
         try:
             info = self.expiry_info()
         except JwtDecodeError:
@@ -115,27 +177,42 @@ class SiteRuntime:
         remaining = (info.expires_at - reference).total_seconds()
         return remaining <= self.refresh_before_seconds
 
+    def _refresh_token_near_expiry(self, reference: datetime) -> bool:
+        """refresh token 是否临近到期；解析不出来时退回按 access token 判断。"""
+        remaining = self.refresh_token_remaining(reference)
+        if remaining is None:
+            # refresh token 不是 JWT / 没有过期字段 → 退回 access 策略，避免不刷新
+            self.log.debug('站点 %s 的 refresh token 无法解析过期时间，退回按 access token 判断', self.name)
+            return self._access_near_expiry(reference)
+        threshold = self.site.schedule.refresh_token_before_seconds
+        if threshold is None:
+            threshold = DEFAULT_REFRESH_TOKEN_BEFORE_SECONDS
+        return remaining <= threshold
+
     # -- 登录态校验 ---------------------------------------------------------------
 
     def check(self) -> CheckResult:
-        """先看 JWT 自身，再调用站点接口校验。"""
+        """先看 JWT 自身，再按需调用站点接口校验。
+
+        mode=refresh 时不请求校验接口（那次真正的刷新本身就是对会话有效性的检测）。
+        """
         token = self.state.access_token
         if not token:
-            result = CheckResult(False, '没有 access_token')
+            result = CheckResult(False, '没有 access_token', kind=CheckKind.LOGGED_OUT)
             self._record_check(result)
             return result
 
         try:
             decode_payload(token)
         except JwtDecodeError as exc:
-            result = CheckResult(False, 'token 无法解析', str(exc))
+            result = CheckResult(False, 'token 无法解析', str(exc), kind=CheckKind.LOGGED_OUT)
             self._record_check(result)
             return result
 
         try:
             info = self.expiry_info()
         except JwtDecodeError as exc:
-            result = CheckResult(False, 'token 无法解析', str(exc))
+            result = CheckResult(False, 'token 无法解析', str(exc), kind=CheckKind.LOGGED_OUT)
             self._record_check(result)
             return result
 
@@ -143,9 +220,20 @@ class SiteRuntime:
             leeway = self.site.jwt.leeway_seconds
             remaining = (info.expires_at - now_utc()).total_seconds() + leeway
             if remaining <= 0:
-                result = CheckResult(False, 'token 已过期', f'过期时间 {info.expires_at.isoformat()}')
+                result = CheckResult(
+                    False,
+                    'token 已过期',
+                    f'过期时间 {info.expires_at.isoformat()}',
+                    kind=CheckKind.TOKEN_EXPIRED,
+                )
                 self._record_check(result)
                 return result
+
+        if self.site.schedule.mode == RefreshMode.REFRESH:
+            # 低频保活模式：不做接口校验，等真正刷新时再验证会话是否还有效
+            result = CheckResult(True, 'token 未过期（refresh 模式不做接口校验）')
+            self._record_check(result)
+            return result
 
         if self.site.login_check is None:
             result = CheckResult(True, 'token 未过期（未配置校验接口）')
@@ -153,6 +241,12 @@ class SiteRuntime:
             return result
 
         result = self.adapter.check_login(self.state)
+        if result.logged_in is None:
+            result.kind = CheckKind.UNKNOWN
+        elif result.logged_in is False:
+            result.kind = CheckKind.LOGGED_OUT
+        else:
+            result.kind = CheckKind.LOGGED_IN
         self._record_check(result)
         return result
 
@@ -206,6 +300,7 @@ class SiteRuntime:
         _append_history(new_state, True, '刷新成功')
 
         self.state = new_state
+        self._sync_refresh_expiry(new_state)
         self._on_success()
 
         written = False
@@ -298,6 +393,14 @@ class SiteRuntime:
                 _sleep(backoff * attempt)
         raise RefreshError(f'刷新失败: {last_error}')
 
+    def _sync_refresh_expiry(self, state: SiteState) -> None:
+        """刷新后同步 refresh token 的到期时间到状态里。"""
+        try:
+            info = self.refresh_expiry_info()
+        except JwtDecodeError:
+            info = ExpiryInfo(expires_at=None)
+        state.refresh_expires_at = info.expires_at
+
     def _update_expiry(self, state: SiteState) -> ExpiryInfo:
         try:
             info = self.adapter.resolve_expiry(state.access_token)
@@ -324,11 +427,14 @@ class SiteRuntime:
 
     def status(self) -> SiteStatus:
         remaining = self.remaining_seconds()
+        refresh_remaining = self.refresh_token_remaining()
         return SiteStatus(
             name=self.name,
             logged_in=self.state.logged_in,
             expires_at=self.state.expires_at,
             remaining_seconds=remaining,
+            refresh_expires_at=self.state.refresh_expires_at,
+            refresh_remaining_seconds=refresh_remaining,
             expiry_field=self.state.expiry_field or self.site.jwt.expiry_field,
             last_check=self.state.last_check,
             last_refresh=self.state.last_refresh,

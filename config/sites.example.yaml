@@ -62,7 +62,10 @@ sites:
         expected: 200
     schedule:
       interval_seconds: 60
-      refresh_before_seconds: 300
+      # 刷新时机：access（按 access token 临期，默认）/ refresh（按 refresh token 临期，低频保活）/ hybrid
+      mode: "access"
+      refresh_before_seconds: 300            # access token 临期阈值
+      refresh_token_before_seconds: 86400    # refresh token 临期阈值（24h，mode=refresh/hybrid 生效）
     persist:
       write_back_to_config: true
     # 可选：失败重试与代理

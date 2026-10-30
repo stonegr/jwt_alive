@@ -84,6 +84,8 @@ class TokenOut(BaseModel):
     refresh_token: str
     expires_at: datetime | None = None
     expiry_field: str | None = None
+    refreshed: bool = False
+    """本次请求是否触发了一次刷新（access token 已过期时按需刷新）。"""
 
 
 class SiteOut(BaseModel):
@@ -93,6 +95,8 @@ class SiteOut(BaseModel):
     logged_in: bool | None = None
     expires_at: datetime | None = None
     remaining_seconds: float | None = None
+    refresh_expires_at: datetime | None = None
+    refresh_remaining_seconds: float | None = None
     expiry_field: str | None = None
     last_check: datetime | None = None
     last_refresh: datetime | None = None
@@ -105,6 +109,7 @@ class SiteDetailOut(SiteOut):
 
     access_token: str
     refresh_token: str
+    refreshed: bool = False
 
 
 class RefreshOut(BaseModel):
@@ -187,11 +192,13 @@ def create_app(service: JwtAliveService, config: AppConfig, prefix: str | None =
         runtime = service.get_runtime(name)
         if runtime is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f'未知站点：{name}')
+        refreshed = _ensure_fresh(service, name)
         out = _site_out(runtime.status())
         return SiteDetailOut(
             **out.model_dump(),
             access_token=runtime.state.access_token,
             refresh_token=runtime.state.refresh_token,
+            refreshed=refreshed,
         )
 
     @router.get('/sites/{name}/token', response_model=TokenOut, summary='获取站点 token')
@@ -199,11 +206,13 @@ def create_app(service: JwtAliveService, config: AppConfig, prefix: str | None =
         runtime = service.get_runtime(name)
         if runtime is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f'未知站点：{name}')
+        refreshed = _ensure_fresh(service, name)
         return TokenOut(
             access_token=runtime.state.access_token,
             refresh_token=runtime.state.refresh_token,
             expires_at=runtime.state.expires_at,
             expiry_field=runtime.state.expiry_field,
+            refreshed=refreshed,
         )
 
     @router.post('/sites/{name}/refresh', response_model=RefreshOut, summary='触发站点刷新')
@@ -239,12 +248,27 @@ def create_app(service: JwtAliveService, config: AppConfig, prefix: str | None =
     return app
 
 
+def _ensure_fresh(service: JwtAliveService, name: str) -> bool:
+    """access token 已过期时按需刷新一次；刷新失败直接报错，不返回过期 token。"""
+    outcome = service.ensure_fresh(name)
+    if outcome is None:
+        return False
+    if not outcome.ok:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f'刷新失败：{outcome.reason}（可能需要重新登录）',
+        )
+    return True
+
+
 def _site_out(s: Any) -> SiteOut:
     return SiteOut(
         name=s.name,
         logged_in=s.logged_in,
         expires_at=s.expires_at,
         remaining_seconds=s.remaining_seconds,
+        refresh_expires_at=s.refresh_expires_at,
+        refresh_remaining_seconds=s.refresh_remaining_seconds,
         expiry_field=s.expiry_field,
         last_check=s.last_check,
         last_refresh=s.last_refresh,

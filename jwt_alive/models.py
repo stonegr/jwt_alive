@@ -42,6 +42,19 @@ class TokenSource(StrEnum):
     SET_COOKIE = 'cookie'
 
 
+class RefreshMode(StrEnum):
+    """刷新触发方式。"""
+
+    ACCESS = 'access'
+    """按 access token 临期刷新（默认，= 现状）。"""
+
+    REFRESH = 'refresh'
+    """按 refresh token 临期刷新（低频保活，access token 靠按需刷新）。"""
+
+    HYBRID = 'hybrid'
+    """任一 token 临期就刷新。"""
+
+
 class SuccessType(StrEnum):
     """登录态校验的成功判定方式。"""
 
@@ -78,6 +91,9 @@ class JwtConfig(_Base):
 
     iat_field: str = 'iat'
     """相对时长格式下用于计算起点的字段（iat）。"""
+
+    refresh_expiry_field: str | None = None
+    """refresh token 的过期字段名，None 表示沿用 expiry_field。"""
 
 
 class TokenConfig(_Base):
@@ -166,7 +182,13 @@ class ScheduleConfig(_Base):
     """扫描间隔，None 表示使用全局默认值。"""
 
     refresh_before_seconds: int | None = None
-    """剩余寿命小于该值时触发刷新，None 表示使用全局默认值。"""
+    """access token 剩余寿命小于该值时触发刷新，None 表示使用全局默认值。"""
+
+    refresh_token_before_seconds: int | None = None
+    """refresh token 剩余寿命小于该值时触发刷新（mode=refresh/hybrid 生效），None 表示用默认值。"""
+
+    mode: RefreshMode = RefreshMode.ACCESS
+    """刷新触发方式：access（默认）/ refresh / hybrid。"""
 
     cron: str | None = None
     """可选的额外 cron 表达式，到点强制刷新。"""
@@ -344,19 +366,38 @@ class TokenBundle:
         return bool(self.access_token or self.refresh_token)
 
 
+class CheckKind(StrEnum):
+    """登录态校验的结论类型。"""
+
+    LOGGED_IN = 'logged_in'
+    """已登录。"""
+
+    TOKEN_EXPIRED = 'token_expired'
+    """access token 已过期（mode=refresh 下属正常状态，不触发刷新）。"""
+
+    LOGGED_OUT = 'logged_out'
+    """服务端明确拒绝（401/403）→ 会话已失效，必须刷新。"""
+
+    UNKNOWN = 'unknown'
+    """网络异常/超时，无法判断 → 不刷新，等下一轮扫描。"""
+
+
 @dataclass(slots=True)
 class CheckResult:
     """登录态校验结果。
 
     logged_in:
         True  = 已登录
-        False = 确定未登录（401/403、token 过期等）→ 需要刷新
+        False = 确定未登录（401/403、token 过期等）
         None  = 无法判断（网络异常/超时）→ 不刷新，等下一轮扫描
+
+    kind 用于区分「access 过期」与「服务端拒绝」，两者是否触发刷新取决于 schedule.mode。
     """
 
     logged_in: bool | None
     reason: str
     detail: str | None = None
+    kind: CheckKind = CheckKind.LOGGED_IN
 
 
 @dataclass(slots=True)
@@ -368,6 +409,8 @@ class SiteState:
     refresh_token: str = ''
     expires_at: datetime | None = None
     expiry_field: str | None = None
+    refresh_expires_at: datetime | None = None
+    """refresh token 的到期时间（用于按 refresh token 触发刷新）。"""
     logged_in: bool | None = None
     last_check: datetime | None = None
     last_refresh: datetime | None = None
@@ -382,6 +425,7 @@ class SiteState:
             'refresh_token': self.refresh_token,
             'expires_at': self.expires_at.isoformat() if self.expires_at else None,
             'expiry_field': self.expiry_field,
+            'refresh_expires_at': self.refresh_expires_at.isoformat() if self.refresh_expires_at else None,
             'logged_in': self.logged_in,
             'last_check': self.last_check.isoformat() if self.last_check else None,
             'last_refresh': self.last_refresh.isoformat() if self.last_refresh else None,
@@ -407,6 +451,7 @@ class SiteState:
             refresh_token=str(data.get('refresh_token', '') or ''),
             expires_at=_dt('expires_at'),
             expiry_field=data.get('expiry_field'),
+            refresh_expires_at=_dt('refresh_expires_at'),
             logged_in=data.get('logged_in'),
             last_check=_dt('last_check'),
             last_refresh=_dt('last_refresh'),

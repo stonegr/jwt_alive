@@ -13,7 +13,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from tzlocal import get_localzone
 
-from jwt_alive.models import SiteConfig
+from jwt_alive.models import CheckKind, RefreshMode, SiteConfig
 from jwt_alive.service import JwtAliveService
 from jwt_alive.utils import now_utc
 
@@ -119,7 +119,9 @@ class KeepAliveScheduler:
             return
 
         result = runtime.check()
-        if result.logged_in is None:
+        mode = runtime.site.schedule.mode
+
+        if result.kind == CheckKind.UNKNOWN:
             # 网络异常/超时：无法判断登录态，不刷新，等下一轮扫描
             self.log.warning(
                 '站点 %s 登录态未知(%s)：%s，本轮跳过',
@@ -128,17 +130,32 @@ class KeepAliveScheduler:
                 result.detail or '',
             )
             return
-        if result.logged_in is False:
+
+        if result.kind == CheckKind.LOGGED_OUT:
+            # 服务端明确拒绝 → 会话已失效，必须刷新
             self.log.info('站点 %s 登录态异常(%s)，触发刷新', name, result.reason)
             self.service.refresh_site(name, force=True)
             return
 
-        if runtime.needs_refresh():
-            self.log.info(
-                '站点 %s 即将过期，触发刷新（剩余 %s 秒）',
-                name,
-                runtime.remaining_seconds(),
-            )
+        if result.kind == CheckKind.TOKEN_EXPIRED and mode == RefreshMode.REFRESH:
+            # 低频保活模式：access token 过期是正常状态，等 refresh token 临期或用户按需取时再刷
+            self.log.debug('站点 %s 的 access token 已过期（refresh 模式不触发刷新）', name)
+            self.service.store.upsert(runtime.state)
+            self.service.store.save()
+            return
+
+        if runtime.needs_refresh(mode=mode):
+            remaining = runtime.remaining_seconds()
+            refresh_remaining = runtime.refresh_token_remaining()
+            if mode == RefreshMode.ACCESS:
+                self.log.info('站点 %s 即将过期，触发刷新（剩余 %s 秒）', name, remaining)
+            else:
+                self.log.info(
+                    '站点 %s 触发刷新（access 剩余 %s 秒，refresh 剩余 %s 秒）',
+                    name,
+                    remaining,
+                    refresh_remaining,
+                )
             self.service.refresh_site(name)
             return
 

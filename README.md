@@ -274,6 +274,35 @@ curl -u alice:s3cret -X POST http://127.0.0.1:8080/api/sites/clockify/refresh
 - 密码明文存配置（与 token 同风险模型），建议 `${ENV}` 注入，且 `config/` 已在 `.gitignore` 中
 - Docker 部署时用 `ports` 暴露端口，并限制来源 IP
 
+## 刷新策略（schedule.mode）
+
+默认 `access`（= 现状）。三种模式的对比（以 access 1 小时、refresh 14 天为例）：
+
+| mode | 触发刷新的条件 | 实际频率 | access token 状态 | 登录态校验接口 |
+| --- | --- | --- | --- | --- |
+| `access`（默认） | access token 临期 | ~26 次/天 | 始终新鲜 | 每次扫描都调 |
+| `refresh` | **refresh token** 临期 | ~1 次/13 天 | 平时过期，取用时现刷 | **不调**（真正刷新那次自然会验证会话是否还有效） |
+| `hybrid` | 任一临期 | ~26 次/天 | 始终新鲜 | 每次扫描都调 |
+
+```yaml
+schedule:
+  mode: refresh                          # 想低频保活就写 refresh
+  refresh_before_seconds: 300            # access token 临期阈值
+  refresh_token_before_seconds: 86400    # refresh token 临期阈值（24h）
+```
+
+要点：
+
+- **`mode=refresh` 下 access token 过期是正常状态**，不会触发后台刷新；
+  用户通过 API 取 token 时（`GET /api/sites/{name}/token`）发现已过期会**当场刷新再返回**
+  （响应里 `refreshed: true`），刷新失败直接返回 `502` 并提示需重新登录
+- `mode=refresh` 下**不再调用登录态校验接口**（省流量）：会话是否还有效，
+  由真正刷新那一次的成败来判断（失败会记 ERROR）
+- `refresh token` 的过期字段名可单独指定：`jwt.refresh_expiry_field`（默认沿用 `expiry_field`）；
+  **解析不出来（非 JWT / 无过期字段）时自动退回按 access token 判断**，不会因此不刷新
+- 状态里会记录 refresh token 的到期时间（`status` 命令与 `/api/sites` 都有展示），
+  一眼看出"保活窗口还剩多久"
+
 ## 扩展：自定义站点适配器
 
 在 `plugins/` 下写一个子类，配置里用 `adapter:` 指定即可：

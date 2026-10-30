@@ -118,6 +118,19 @@ class JwtAliveService:
     def refresh_all(self, force: bool = False) -> list[RefreshOutcome]:
         return [self.refresh_site(name, force=force) for name in self.runtimes]
 
+    def ensure_fresh(self, name: str) -> RefreshOutcome | None:
+        """确保 access token 可用：已过期则立即刷新。
+
+        返回 None 表示无需刷新（token 仍有效）；
+        返回 RefreshOutcome 表示执行了刷新（ok=False 表示刷新失败）。
+        """
+        runtime = self.runtimes.get(name)
+        if runtime is None:
+            return None
+        if not runtime.access_token_expired():
+            return None
+        return self.refresh_site(name, force=True)
+
     def refresh_due(self, now: datetime | None = None) -> list[RefreshOutcome]:
         """只刷新已到期/临近到期的站点。"""
         reference = now or now_utc()
